@@ -1,0 +1,7 @@
+wandb
+tmp
+runs
+logs
+*.pyc
+*.egg-info
+*.mp4

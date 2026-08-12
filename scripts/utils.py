@@ -294,8 +294,35 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     Cfg.terrain.num_border_boxes = 0
     Cfg.terrain.center_robots = True
     Cfg.terrain.center_span = 1
-    Cfg.terrain.teleport_robots = True
-    # Cfg.terrain.mesh_type = "boxes_tm"
+    Cfg.terrain.teleport_robots = False
+    Cfg.terrain.mesh_type = "Plane"  #boxes_tm,使用plane就需要关闭 teleport_robots
+
+
+
+    Cfg.commands.hybrid_mode = "binary"  #50% position, 50% force mode，binary混合
+
+    Cfg.commands.lin_vel_x = [0.0, 0.0]
+    Cfg.commands.limit_vel_x = [0.0, 0.0]
+
+    Cfg.commands.lin_vel_y = [0.0, 0.0]
+    Cfg.commands.limit_vel_y = [0.0, 0.0]
+
+    Cfg.commands.ang_vel_yaw = [0.0, 0.0]
+    Cfg.commands.limit_vel_yaw = [0.0, 0.0]
+
+
+    #末端位置球坐标命令
+    Cfg.commands.ee_sphe_radius = [0.55, 0.55]  #末端球坐标半径
+    Cfg.commands.limit_ee_sphe_radius = [0.55, 0.55]
+    Cfg.commands.ee_sphe_pitch = [0.0, 0.0]
+    Cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
+    Cfg.commands.ee_sphe_yaw = [0.0, 0.0]
+    Cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
+
+
+    Cfg.domain_rand.push_robots = False
+    Cfg.domain_rand.randomize_tile_roughness = False
+
 
     Cfg.asset.fix_base_link = fix_base
     Cfg.commands.teleop_occulus = teleop

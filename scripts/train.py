@@ -593,8 +593,8 @@ def configure_env():
     Cfg.commands.p_gains_arm = [64., 128., 64., 64., 64., 64., 64.]
     Cfg.commands.d_gains_arm = [1.5, 3.0, 1.5, 1.5, 1.5, 1.5, 1.5]
 
-    
-    Cfg.commands.hybrid_mode = "binary"
+    # force position binary
+    Cfg.commands.hybrid_mode = "binary"  #50% position, 50% force mode
 
     Cfg.control.arm_scale_reduction = 2.0
 

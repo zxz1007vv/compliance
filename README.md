@@ -91,16 +91,26 @@ You should see a GUI window with 10 B1+Z1 robots standing in place.
 ### Environment and Model Configuration <a name="configuration"></a>
 
 
-**CODE STRUCTURE** The main environment for simulating a legged robot is
-in [legged_robot.py](b1_gym/envs/base/legged_robot.py). The default configuration parameters including reward
-weightings are defined in [legged_robot_config.py::Cfg](b1_gym/envs/base/legged_robot_config.py). Note that many 
-are overridden in `train.py`.
+**CODE STRUCTURE** The reusable simulator implementation remains in
+[legged_robot.py](b1_gym/envs/base/legged_robot.py). The B1+Z1 task and all of
+its environment/training overrides live together in
+[b1_z1_config.py](b1_gym/envs/b1_z1/b1_z1_config.py). `train.py` only parses
+arguments and composes the registered task:
 
-There are three scripts in the [scripts](scripts/) directory:
+```text
+train.py -> TaskRegistry -> B1Z1Env -> OnPolicyRunner -> PPO -> ActorCritic
+```
+
+The RL framework is organized by responsibility under
+`b1_gym_learn/{runners,algorithms,modules,storage}`. The historical
+`b1_gym_learn.ppo_cse` imports remain available for compatibility.
+
+The main scripts in [scripts](scripts/) are:
 
 ```bash
 scripts
 ├── __init__.py
+├── export_policy.py
 ├── play.py
 ├── test.py
 └── train.py
@@ -115,21 +125,47 @@ environments correctly. To train an agent, run `train.py`. To evaluate a trained
 To train the compliant whole-body controller for B1+Z1, run: 
 
 ```bash
-python scripts/train.py
+python scripts/train.py --task b1_z1_ik
 ```
 
 The script prints `Saved checkpoint 0` after the first update. TensorBoard is
-the default logger; set `COMPLIANCE_LOGGER=wandb` or `both` to enable Weights &
-Biases.
+the default logger. W&B is optional and can be enabled with `--logger wandb`
+or `--logger both` after installing `pip install -e '.[wandb]'`.
 
-Training length and checkpoint cadence are configured by
-`RunnerArgs.max_iterations` and `RunnerArgs.save_interval`. Following the
-HIMLoco runner lifecycle, checkpoints are written directly into the run
-directory as `model_<iteration>.pt`. Each checkpoint contains the policy,
-optimizer states, and the current iteration so it can be used to resume
-training. Policy export is intentionally deferred until `play.py`.
+Common experiment overrides are available on the command line:
 
-The GUI is off during training by default. To turn it on, set `headless=False` at the bottom of `train.py` i.e. `train_b1_z1_IK(headless=False)`
+```bash
+python scripts/train.py \
+  --task b1_z1_ik \
+  --num-envs 4000 \
+  --max-iterations 100000 \
+  --save-interval 400 \
+  --run-name force_tracking
+```
+
+Each run owns all of its artifacts:
+
+```text
+logs/b1_z1_ik/<date>_<run-name>/
+├── config.json
+├── tensorboard/
+├── checkpoints/
+│   ├── model_000400.pt
+│   └── model_latest.pt
+└── exported/
+```
+
+Checkpoints contain policy and optimizer states, iteration/runner statistics,
+the full task configuration, and RNG states. Historical checkpoints stored in
+the run root or an older `checkpoints/` directory remain loadable. Resume with:
+
+```bash
+python scripts/train.py \
+  --resume-run-dir logs/b1_z1_ik/<run-directory> \
+  --checkpoint latest
+```
+
+The GUI is off during training by default. Pass `--viewer` to enable it.
 
 Training with the default configuration requires about 12GB of GPU memory. If you have less memory available, you can 
 still train by reducing the number of parallel environments used in simulation (the default is `Cfg.env.num_envs = 4000`).
@@ -141,7 +177,9 @@ Run a saved checkpoint by passing its local run directory and iteration:
 ```bash
 python scripts/play.py \
   --run-dir logs/b1_z1_ik/<run-directory> \
-  --checkpoint 5000
+  --checkpoint 5000 \
+  --control-mode position \
+  --seed 1
 ```
 
 Running `python scripts/play.py` without arguments automatically selects the
@@ -152,3 +190,32 @@ Use `--checkpoint latest` to select the highest numbered checkpoint. At play
 startup the policy is exported as one TorchScript file under
 `<run-directory>/exported/policies/`. Its filename combines the run name and
 checkpoint, for example `wbc_release_5000.pt`.
+
+`--control-mode` accepts only `position`, `force`, `binary`, or `mixed`.
+Headless evaluations can use multiple environments and automatically write a
+machine-readable JSON report under `<run-directory>/evaluations/`:
+
+```bash
+python scripts/play.py \
+  --run-dir logs/b1_z1_ik/<run-directory> \
+  --checkpoint 5000 \
+  --control-mode force \
+  --force-amplitude 70 \
+  --seed 1 \
+  --num-envs 32 \
+  --steps 2000 \
+  --headless \
+  --print-every 0
+```
+
+See [the first-round evaluation protocol](docs/round1_closure_evaluation_protocol.md)
+for the three-seed position/force matrix, acceptance thresholds, and required
+comparison artifacts.
+
+Export without constructing an Isaac Gym environment:
+
+```bash
+python scripts/export_policy.py \
+  --run-dir logs/b1_z1_ik/<run-directory> \
+  --checkpoint latest
+```

@@ -15,10 +15,11 @@ setup(
                       'tqdm',
                       'matplotlib',
                       'numpy==1.23.5',
-                      'wandb==0.15.0',
-                      'wandb_osh',
                       'tensorboard==2.14.0',
                       'moviepy==1.0.3',
                       'imageio'
-                      ]
+                      ],
+    extras_require={
+        'wandb': ['wandb==0.15.0', 'wandb_osh'],
+    },
 )

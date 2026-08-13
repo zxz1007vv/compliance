@@ -1,0 +1,151 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import isaacgym  # noqa: F401 - must precede torch imports in this project.
+
+from b1_gym.envs import register_tasks
+from b1_gym.utils.artifacts import (
+    load_run_config,
+    resolve_latest_run,
+    resolve_local_checkpoint,
+)
+from b1_gym.utils.config_utils import ConfigNode
+from b1_gym.utils.task_registry import TaskRegistry
+from b1_gym_learn.logging.experiment_logger import ExperimentLogger
+
+
+class DummyEnv:
+    def __init__(self, sim_device, headless, cfg, physics_engine):
+        self.sim_device = sim_device
+        self.headless = headless
+        self.cfg = cfg
+        self.physics_engine = physics_engine
+        self.cfg.runtime_marker = "derived-by-environment"
+
+
+class DummyRunner:
+    def __init__(self, env, **kwargs):
+        self.env = env
+        self.kwargs = kwargs
+
+
+def env_cfg_factory():
+    return ConfigNode(env=ConfigNode(num_envs=4096))
+
+
+def train_cfg_factory():
+    return ConfigNode(
+        policy=ConfigNode(width=64),
+        algorithm=ConfigNode(learning_rate=1e-3),
+        runner=ConfigNode(
+            max_iterations=100,
+            save_interval=10,
+        ),
+        run=ConfigNode(
+            task_name="dummy",
+            training_name="baseline",
+            experiment_group="tests",
+            experiment_job_type="unit",
+        ),
+    )
+
+
+class ArtifactsAndRegistryTests(unittest.TestCase):
+    def test_checkpoint_resolution_supports_new_and_historical_layouts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            checkpoint_dir = run_dir / "checkpoints"
+            checkpoint_dir.mkdir()
+            (run_dir / "model_9.pt").touch()
+            (checkpoint_dir / "model_000009.pt").touch()
+            (checkpoint_dir / "model_000012.pt").touch()
+
+            _, latest_path, latest_number = resolve_local_checkpoint(run_dir)
+            self.assertEqual(12, latest_number)
+            self.assertEqual(checkpoint_dir / "model_000012.pt", latest_path)
+
+            _, exact_path, exact_number = resolve_local_checkpoint(run_dir, 9)
+            self.assertEqual(9, exact_number)
+            self.assertEqual(checkpoint_dir / "model_000009.pt", exact_path)
+
+    def test_latest_run_and_config_are_local_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_root = Path(directory)
+            task_dir = log_root / "b1_z1_ik"
+            older = task_dir / "older"
+            newer = task_dir / "newer"
+            for index, run_dir in enumerate((older, newer), start=1):
+                (run_dir / "checkpoints").mkdir(parents=True)
+                (run_dir / "config.json").write_text(
+                    json.dumps({"index": index}), encoding="utf-8"
+                )
+                checkpoint = run_dir / "checkpoints" / f"model_{index:06d}.pt"
+                checkpoint.touch()
+                os.utime(checkpoint, (index, index))
+
+            self.assertEqual(newer, resolve_latest_run(log_root, "b1_z1_ik"))
+            self.assertEqual({"index": 2}, load_run_config(newer))
+
+    def test_registry_returns_isolated_configs_and_applies_cli_overrides(self):
+        registry = TaskRegistry()
+        registry.register(
+            "dummy", DummyEnv, env_cfg_factory, train_cfg_factory, DummyRunner
+        )
+        first_env_cfg, first_train_cfg = registry.get_cfgs("dummy")
+        second_env_cfg, second_train_cfg = registry.get_cfgs("dummy")
+        first_env_cfg.env.num_envs = 1
+        first_train_cfg.runner.max_iterations = 1
+        self.assertEqual(4096, second_env_cfg.env.num_envs)
+        self.assertEqual(100, second_train_cfg.runner.max_iterations)
+
+        args = SimpleNamespace(
+            num_envs=32,
+            max_iterations=7,
+            save_interval=3,
+            run_name="override",
+            sim_device="cpu",
+            rl_device="cpu",
+            headless=True,
+            physics_engine="SIM_PHYSX",
+            resume_run_dir=None,
+        )
+        env, env_cfg = registry.make_env("dummy", args)
+        runner, train_cfg = registry.make_alg_runner(env, "dummy", args)
+        self.assertEqual(32, env_cfg.env.num_envs)
+        self.assertEqual(7, train_cfg.runner.max_iterations)
+        self.assertEqual(3, train_cfg.runner.save_interval)
+        self.assertEqual("override", train_cfg.run.training_name)
+        self.assertIs(train_cfg, runner.kwargs["train_cfg"])
+        logged = runner.kwargs["log_config"]
+        self.assertEqual("pre_environment_init", logged["ConfigMeta"]["env_config_stage"])
+        self.assertNotIn("runtime_marker", logged["Cfg"])
+        self.assertEqual(32, logged["Cfg"]["env"]["num_envs"])
+
+    def test_builtin_registration_is_idempotent(self):
+        first = register_tasks()
+        second = register_tasks()
+        self.assertIs(first, second)
+        self.assertIn("b1_z1_ik", first.names())
+
+    def test_experiment_logger_creates_canonical_layout(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"COMPLIANCE_LOG_DIR": directory, "COMPLIANCE_LOGGER": "none"},
+        ):
+            logger = ExperimentLogger("task", "run", config={"value": 1})
+            try:
+                self.assertTrue((logger.run_dir / "config.json").is_file())
+                self.assertTrue(logger.checkpoint_dir.is_dir())
+                self.assertTrue(logger.tensorboard_dir.is_dir())
+                self.assertTrue(logger.export_dir.is_dir())
+            finally:
+                logger.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,130 +1,25 @@
-import os
+import random
 import sys
-import glob
-import copy
-import json
-import re
-from pathlib import Path
-import yaml
-import wandb
-import torch
-from typing import Callable, Tuple 
-import pickle as pkl
+from typing import Callable
 
-from isaacgym.torch_utils import *
-from isaacgym import gymapi, gymutil
-from typing import List
+import isaacgym
+import numpy as np
+import torch
 
 sys.path.append('../')
 
-from b1_gym.envs import *
-from b1_gym.envs.base.legged_robot_config import Cfg
-from b1_gym.envs.b1.b1_plus_z1_config import config_b1_plus_z1
+from b1_gym.envs.b1_z1.b1_z1 import B1Z1Env
+from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
 from b1_gym.envs.wrappers.history_wrapper import HistoryWrapper
-from b1_gym.envs.go1.velocity_tracking import VelocityTrackingEasyEnv
-
-from b1_gym_learn.ppo_cse.actor_critic import ActorCritic
-from b1_gym_learn.ppo_cse.actor_critic import AC_Args
-
-
-def _apply_class_dict(target, values):
-    for key, value in values.items():
-        if hasattr(target, key):
-            setattr(target, key, value)
-
-
-def _apply_cfg_dict(cfg_dict):
-    for section_name, section_values in cfg_dict.items():
-        if not hasattr(Cfg, section_name) or not isinstance(section_values, dict):
-            continue
-        section = getattr(Cfg, section_name)
-        for key, value in section_values.items():
-            if hasattr(section, key):
-                setattr(section, key, value)
-
-
-def _resolve_run_dir(run_dir):
-    requested = Path(run_dir).expanduser()
-    if requested.is_absolute() or requested.exists():
-        return requested.resolve()
-    project_relative = Path(__file__).resolve().parents[1] / requested
-    if project_relative.exists():
-        return project_relative.resolve()
-    return requested.resolve()
-
-
-def resolve_latest_run(log_root=None, task_name=None):
-    project_root = Path(__file__).resolve().parents[1]
-    if log_root is None:
-        log_root = Path(os.environ.get("COMPLIANCE_LOG_DIR", project_root / "logs"))
-    else:
-        log_root = Path(log_root).expanduser()
-    task_name = task_name or os.environ.get("COMPLIANCE_TASK_NAME", "b1_z1_ik")
-    task_dir = log_root / task_name
-
-    candidates = []
-    if task_dir.is_dir():
-        for run_dir in task_dir.iterdir():
-            if not run_dir.is_dir() or not (run_dir / "config.json").is_file():
-                continue
-            try:
-                _, checkpoint_path, checkpoint_number = resolve_local_checkpoint(
-                    run_dir, "latest"
-                )
-            except FileNotFoundError:
-                continue
-            candidates.append(
-                (checkpoint_path.stat().st_mtime, checkpoint_number, run_dir)
-            )
-
-    if not candidates:
-        raise FileNotFoundError(
-            f"No trained runs with checkpoints found under {task_dir}"
-        )
-    return max(candidates, key=lambda item: (item[0], item[1]))[2].resolve()
-
-
-def resolve_local_checkpoint(run_dir, checkpoint="latest"):
-    run_dir = _resolve_run_dir(run_dir)
-    # New runs follow HIMLoco and store model_<iteration>.pt in the run root.
-    # The checkpoints/ fallback keeps existing compliance runs playable.
-    checkpoint_dirs = (run_dir, run_dir / "checkpoints")
-    numbered = []
-    for checkpoint_dir in checkpoint_dirs:
-        for path in checkpoint_dir.glob("model_*.pt"):
-            match = re.fullmatch(r"model_(\d+)\.pt", path.name)
-            if match:
-                numbered.append((int(match.group(1)), path))
-
-    if str(checkpoint).lower() == "latest":
-        if not numbered:
-            searched = ", ".join(str(path) for path in checkpoint_dirs)
-            raise FileNotFoundError(f"No model checkpoints found in: {searched}")
-        checkpoint_number, checkpoint_path = max(
-            numbered,
-            key=lambda item: (item[0], item[1].parent == run_dir),
-        )
-    else:
-        checkpoint_number = int(checkpoint)
-        candidates = [path for checkpoint_dir in checkpoint_dirs for path in (
-            checkpoint_dir / f"model_{checkpoint_number}.pt",
-            checkpoint_dir / f"model_{checkpoint_number:06d}.pt",
-        )
-        ]
-        checkpoint_path = next((path for path in candidates if path.is_file()), None)
-        if checkpoint_path is None:
-            searched = ", ".join(str(path) for path in checkpoint_dirs)
-            raise FileNotFoundError(
-                f"No model checkpoint {checkpoint_number} in: {searched}"
-            )
-    return run_dir, checkpoint_path, checkpoint_number
-
-
-def load_run_config(run_dir):
-    config_path = Path(run_dir) / "config.json"
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Training config not found: {config_path}")
-    return json.loads(config_path.read_text(encoding="utf-8"))
+from b1_gym.utils.artifacts import (
+    load_run_config,
+    resolve_latest_run,
+    resolve_local_checkpoint,
+    resolve_run_dir,
+)
+from b1_gym.utils.config_utils import apply_config, normalize_saved_env_config
+from b1_gym_learn.modules.actor_critic import ActorCritic
+from b1_gym_learn.utils.policy_export import export_policy_as_jit
 
 
 class LocalPolicy:
@@ -143,39 +38,19 @@ class LocalPolicy:
         return actions
 
 
-class PolicyExporter(torch.nn.Module):
-    """Single-file inference graph matching the policy used by play."""
-
-    def __init__(self, actor_critic):
-        super().__init__()
-        self.adaptation_module = copy.deepcopy(actor_critic.adaptation_module)
-        self.actor_body = copy.deepcopy(actor_critic.actor_body)
-
-    def forward(self, obs_history):
-        latent = self.adaptation_module(obs_history)
-        return self.actor_body(torch.cat((obs_history, latent), dim=-1))
-
-
-def export_policy_as_jit(actor_critic, path, filename):
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    output_path = path / filename
-    exporter = PolicyExporter(actor_critic).cpu().eval()
-    torch.jit.script(exporter).save(str(output_path))
-    return output_path
-
-
 def load_local_policy(run_dir, checkpoint, env, device="cuda:0"):
     run_dir, checkpoint_path, checkpoint_number = resolve_local_checkpoint(
         run_dir, checkpoint
     )
     local_config = load_run_config(run_dir)
-    _apply_class_dict(AC_Args, local_config.get("AC_Args", {}))
+    train_cfg = B1Z1CfgPPO()
+    apply_config(train_cfg.policy, local_config.get("AC_Args", {}))
     actor_critic = ActorCritic(
         env.num_obs,
         env.num_privileged_obs,
         env.num_obs_history,
         env.num_actions,
+        cfg=train_cfg.policy,
     ).to(device)
     loaded = torch.load(str(checkpoint_path), map_location=device)
     state_dict = loaded.get("model_state_dict", loaded)
@@ -218,7 +93,9 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
              num_envs: int = 1, headless: bool = False, fix_base: bool = False,
              teleop: bool = False, interpolate_ee_cmds: bool = True,
              sample_feasible_commands: bool = False, control_only_z1: bool = False,
-             local_run_dir: str = None, checkpoint="latest"):
+             local_run_dir: str = None, checkpoint="latest",
+             control_mode: str = None, seed: int = 1,
+             force_amplitude: float = None):
     '''
     1. Load the parameters and weights of a wandb run
     2. Initialize the simulation parameters with these weights.
@@ -237,28 +114,61 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     
     if run_path is not None and local_run_dir is not None:
         raise ValueError("Choose either a W&B run_path or a local_run_dir, not both")
+    valid_control_modes = {"position", "force", "binary", "mixed"}
+    if control_mode is not None and control_mode not in valid_control_modes:
+        available = ", ".join(sorted(valid_control_modes))
+        raise ValueError(
+            f"Unknown control mode {control_mode!r}; choose one of: {available}"
+        )
+    if force_amplitude is not None and force_amplitude < 0:
+        raise ValueError("force_amplitude must be non-negative")
+
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    config_load_info = {
+        "legacy_reward_scale_repaired": False,
+        "control_dt": None,
+        "matching_scaled_coefficients": 0,
+        "compared_coefficients": 0,
+    }
 
     if local_run_dir is not None:
-        local_run_dir = _resolve_run_dir(local_run_dir)
-        config_b1_plus_z1(Cfg)
+        local_run_dir = resolve_run_dir(local_run_dir)
+        cfg = B1Z1Cfg()
         local_config = load_run_config(local_run_dir)
-        _apply_cfg_dict(local_config["Cfg"])
+        normalized_cfg, config_load_info = normalize_saved_env_config(
+            cfg, local_config["Cfg"]
+        )
+        apply_config(cfg, normalized_cfg)
+        if config_load_info["legacy_reward_scale_repaired"]:
+            print(
+                "Detected and repaired a legacy runtime-scaled reward config "
+                f"(divided by dt={config_load_info['control_dt']:.6g})."
+            )
     elif run_path is not None:
         # test mode
+        import wandb
+
         api = wandb.Api()
         run = api.run(run_path)
 
         # Default config for all robots
-        config_b1_plus_z1(Cfg)
+        cfg = B1Z1Cfg()
 
         all_cfg = run.config
-        cfg = all_cfg["Cfg"]
-
-        _apply_cfg_dict(cfg)
+        normalized_cfg, config_load_info = normalize_saved_env_config(
+            cfg, all_cfg["Cfg"]
+        )
+        apply_config(cfg, normalized_cfg)
                     
     else:
         # play mode
-        config_b1_plus_z1(Cfg)
+        cfg = B1Z1Cfg()
 
 
     # # # Turn off DR for evaluation script
@@ -285,59 +195,72 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     # Cfg.noise.noise_level = 0
 
     # Define env params 
-    Cfg.env.num_recording_envs = 1
-    Cfg.env.num_envs = num_envs
-    Cfg.env.episode_length_s = 10000
-    Cfg.terrain.num_rows = 10
-    Cfg.terrain.num_cols = 10
-    Cfg.terrain.border_size = 0
-    Cfg.terrain.num_border_boxes = 0
-    Cfg.terrain.center_robots = True
-    Cfg.terrain.center_span = 1
-    Cfg.terrain.teleport_robots = False
-    Cfg.terrain.mesh_type = "Plane"  #boxes_tm,使用plane就需要关闭 teleport_robots
+    cfg.env.num_recording_envs = 1
+    cfg.env.num_envs = num_envs
+    cfg.env.episode_length_s = 10000
+    cfg.terrain.num_rows = 10
+    cfg.terrain.num_cols = 10
+    cfg.terrain.border_size = 0
+    cfg.terrain.num_border_boxes = 0
+    cfg.terrain.center_robots = True
+    cfg.terrain.center_span = 1
+    cfg.terrain.teleport_robots = False
+    cfg.terrain.mesh_type = "plane"  # boxes_tm; plane requires teleport_robots=False
 
 
 
-    Cfg.commands.hybrid_mode = "binary"  #50% position, 50% force mode，binary混合
+    if control_mode is not None:
+        cfg.commands.hybrid_mode = control_mode
+    if seed is not None:
+        cfg.commands.curriculum_seed = seed
+    if force_amplitude is not None:
+        force_range = [-float(force_amplitude), float(force_amplitude)]
+        cfg.domain_rand.max_push_force_xyz_gripper = force_range
 
-    Cfg.commands.lin_vel_x = [0.0, 0.0]
-    Cfg.commands.limit_vel_x = [0.0, 0.0]
+    cfg.commands.lin_vel_x = [0.0, 0.0]
+    cfg.commands.limit_vel_x = [0.0, 0.0]
 
-    Cfg.commands.lin_vel_y = [0.0, 0.0]
-    Cfg.commands.limit_vel_y = [0.0, 0.0]
+    cfg.commands.lin_vel_y = [0.0, 0.0]
+    cfg.commands.limit_vel_y = [0.0, 0.0]
 
-    Cfg.commands.ang_vel_yaw = [0.0, 0.0]
-    Cfg.commands.limit_vel_yaw = [0.0, 0.0]
+    cfg.commands.ang_vel_yaw = [0.0, 0.0]
+    cfg.commands.limit_vel_yaw = [0.0, 0.0]
 
 
     #末端位置球坐标命令
-    Cfg.commands.ee_sphe_radius = [0.55, 0.55]  #末端球坐标半径
-    Cfg.commands.limit_ee_sphe_radius = [0.55, 0.55]
-    Cfg.commands.ee_sphe_pitch = [0.0, 0.0]
-    Cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
-    Cfg.commands.ee_sphe_yaw = [0.0, 0.0]
-    Cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
+    cfg.commands.ee_sphe_radius = [0.55, 0.55]  #末端球坐标半径
+    cfg.commands.limit_ee_sphe_radius = [0.55, 0.55]
+    cfg.commands.ee_sphe_pitch = [0.0, 0.0]
+    cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
+    cfg.commands.ee_sphe_yaw = [0.0, 0.0]
+    cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
 
 
-    Cfg.domain_rand.push_robots = False
-    Cfg.domain_rand.randomize_tile_roughness = False
+    cfg.domain_rand.push_robots = False
+    cfg.domain_rand.randomize_tile_roughness = False
 
 
-    Cfg.asset.fix_base_link = fix_base
-    Cfg.commands.teleop_occulus = teleop
-    Cfg.commands.interpolate_ee_cmds = interpolate_ee_cmds
-    Cfg.commands.control_only_z1 = control_only_z1
+    cfg.asset.fix_base_link = fix_base
+    cfg.commands.teleop_occulus = teleop
+    cfg.commands.interpolate_ee_cmds = interpolate_ee_cmds
+    cfg.commands.control_only_z1 = control_only_z1
 
-    Cfg.env.recording_height_px = 720
-    Cfg.env.recording_width_px = 1280
+    cfg.env.recording_height_px = 720
+    cfg.env.recording_width_px = 1280
     
-    Cfg.env.record_video = True
-    Cfg.env.send_eval_data = True
+    cfg.env.record_video = True
+    cfg.env.send_eval_data = True
 
     # Create env
-    env = VelocityTrackingEasyEnv(sim_device=sim_device, headless=headless, cfg=Cfg)
+    env = B1Z1Env(sim_device=sim_device, headless=headless, cfg=cfg)
     env = HistoryWrapper(env)
+    env._config_load_info = config_load_info
+    env._evaluation_settings = {
+        "control_mode": cfg.commands.hybrid_mode,
+        "seed": seed,
+        "force_amplitude": force_amplitude,
+        "force_target_range": list(cfg.domain_rand.max_push_force_xyz_gripper),
+    }
 
     if local_run_dir is not None:
         policy, _ = load_local_policy(

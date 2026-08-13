@@ -1,12 +1,19 @@
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import isaacgym
 assert isaacgym
 import numpy as np
 import torch
+from isaacgym.torch_utils import (
+    get_euler_xyz,
+    quat_from_euler_xyz,
+    quat_rotate_inverse,
+)
 from tqdm import tqdm
 
 from b1_gym_learn.ppo_cse.experiment_logger import safe_name
@@ -29,6 +36,23 @@ def parse_args():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument(
+        "--control-mode",
+        choices=("position", "force", "binary", "mixed"),
+        help="Evaluation control mode; defaults to the mode saved by training",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=1, help="Evaluation RNG seed (default: 1)"
+    )
+    parser.add_argument(
+        "--force-amplitude",
+        type=float,
+        help="Override the force-target sampling range with [-A, A] N",
+    )
+    parser.add_argument(
+        "--output",
+        help="Metrics JSON path; defaults to <run-dir>/evaluations/<timestamp>_*.json",
+    )
     parser.add_argument(
         "--print-every",
         type=int,
@@ -85,12 +109,34 @@ class RolloutMetrics:
             return None
         return self.maxima[name].item()
 
+    def count(self, name):
+        return self.counts.get(name, 0)
+
+    def as_dict(self):
+        return {
+            name: {
+                "mean": self.mean(name),
+                "maximum": self.maximum(name),
+                "samples": self.count(name),
+            }
+            for name in sorted(self.totals)
+        }
+
 
 def update_rollout_metrics(metrics, env, rewards, dones):
     valid_state = ~dones.bool()
     force_mode = env.force_or_position_control > 0.5
     position_mode = (~force_mode) & valid_state
     valid_force_mode = force_mode & valid_state
+    force_commands = env.commands[:, 12:15]
+    applied_forces_world = env.forces[:, env.gripper_stator_index, :3]
+    base_rpy_world = torch.stack(get_euler_xyz(env.base_quat), dim=1)
+    zeros = torch.zeros_like(base_rpy_world[:, 2])
+    yaw_quat_world = quat_from_euler_xyz(zeros, zeros, base_rpy_world[:, 2])
+    applied_forces = quat_rotate_inverse(yaw_quat_world, applied_forces_world)
+    force_abs_error = torch.abs(applied_forces - force_commands)
+    active_force_command = torch.norm(force_commands, dim=1) > 1.0
+    valid_active_force = valid_force_mode & active_force_command
     base_xy_error = torch.norm(
         env.commands[:, :2] - env.base_lin_vel[:, :2], dim=1
     )
@@ -116,6 +162,25 @@ def update_rollout_metrics(metrics, env, rewards, dones):
     metrics.update(
         "ee_z_force_error", env.gripper_z_force_tracking_error_buf, valid_force_mode
     )
+    metrics.update(
+        "active_force_command", active_force_command.float(), valid_force_mode
+    )
+    for axis, index in zip(("x", "y", "z"), range(3)):
+        metrics.update(
+            f"ee_{axis}_force_abs_error_active",
+            force_abs_error[:, index],
+            valid_active_force,
+        )
+        metrics.update(
+            f"ee_{axis}_force_command_abs_active",
+            torch.abs(force_commands[:, index]),
+            valid_active_force,
+        )
+        metrics.update(
+            f"ee_{axis}_applied_force_abs_active",
+            torch.abs(applied_forces[:, index]),
+            valid_active_force,
+        )
     metrics.update("joint_torque_rms", torque_rms)
     metrics.update("joint_torque_abs", torch.abs(env.torques))
 
@@ -132,9 +197,13 @@ def print_rollout_metrics(metrics, step, steps, final=False):
     reset_count = int(round(metrics.totals.get("reset", torch.tensor(0.0)).item()))
     reset_rate = metrics.mean("reset")
     force_mode_fraction = metrics.mean("force_mode")
+    active_force_fraction = metrics.mean("active_force_command")
     reset_rate_text = "n/a" if reset_rate is None else f"{100 * reset_rate:.2f}%"
     force_mode_text = (
         "n/a" if force_mode_fraction is None else f"{100 * force_mode_fraction:.1f}%"
+    )
+    active_force_text = (
+        "n/a" if active_force_fraction is None else f"{100 * active_force_fraction:.1f}%"
     )
 
     lines = [
@@ -147,8 +216,13 @@ def print_rollout_metrics(metrics, step, steps, final=False):
         f"  EE orientation error: {format_metric(metrics.mean('ee_orientation_error'), 'rad')}",
         f"  EE XY force error (force mode): {format_metric(metrics.mean('ee_xy_force_error'), 'N')}",
         f"  EE Z force error (force mode): {format_metric(metrics.mean('ee_z_force_error'), 'N')}",
+        "  active-command force |error| X/Y/Z: "
+        f"{format_metric(metrics.mean('ee_x_force_abs_error_active'), 'N')} / "
+        f"{format_metric(metrics.mean('ee_y_force_abs_error_active'), 'N')} / "
+        f"{format_metric(metrics.mean('ee_z_force_abs_error_active'), 'N')}",
         f"  joint torque RMS: {format_metric(metrics.mean('joint_torque_rms'), 'N m')}",
         f"  force-mode samples: {force_mode_text}",
+        f"  active force commands (>1 N): {active_force_text}",
     ]
     if final:
         lines.append(
@@ -158,7 +232,12 @@ def print_rollout_metrics(metrics, step, steps, final=False):
 
 
 def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
-         viewer=True, record_video=False, print_every=100):
+         viewer=True, record_video=False, print_every=100, control_mode=None,
+         seed=1, force_amplitude=None, output=None):
+    if num_envs < 1:
+        raise ValueError("num_envs must be at least 1")
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
     if run_dir is None:
         run_dir = resolve_latest_run()
         print(f"Automatically selected latest run: {run_dir}")
@@ -175,6 +254,14 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
         sim_device=device,
         num_envs=num_envs,
         headless=not viewer,
+        control_mode=control_mode,
+        seed=seed,
+        force_amplitude=force_amplitude,
+    )
+    effective_mode = env.cfg.commands.hybrid_mode
+    print(
+        f"Evaluation settings: mode={effective_mode}, seed={seed}, "
+        f"num_envs={num_envs}, steps={steps}"
     )
     export_path = export_policy_as_jit(
         policy.actor_critic,
@@ -185,6 +272,7 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
 
     cameras = []
     video_writer = None
+    video_path = None
     if record_video:
         import imageio
         from b1_gym.sensors.floating_camera_sensor import FloatingCameraSensor
@@ -218,6 +306,43 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
     if video_writer is not None:
         video_writer.close()
     print_rollout_metrics(metrics, steps, steps, final=True)
+
+    evaluation = {
+        "schema_version": 1,
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "run_dir": str(run_dir.resolve()),
+        "checkpoint": checkpoint_number,
+        "policy_id": policy_id,
+        "settings": {
+            "control_mode": effective_mode,
+            "seed": seed,
+            "device": device,
+            "num_envs": num_envs,
+            "steps": steps,
+            "force_amplitude": force_amplitude,
+            "force_target_range": list(
+                env.cfg.domain_rand.max_push_force_xyz_gripper
+            ),
+        },
+        "config_load": getattr(env, "_config_load_info", {}),
+        "metrics": metrics.as_dict(),
+        "video": str(video_path.resolve()) if video_path is not None else None,
+    }
+    if output is None:
+        evaluation_dir = run_dir / "evaluations"
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        evaluation_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_path = evaluation_dir / (
+            f"{evaluation_timestamp}_{policy_id}_{effective_mode}_seed{seed}.json"
+        )
+    else:
+        output_path = Path(output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(evaluation, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    print(f"Evaluation metrics: {output_path}")
     cameras.clear()
     env.close()
 
@@ -233,6 +358,10 @@ if __name__ == "__main__":
         viewer=args.viewer,
         record_video=args.record_video,
         print_every=args.print_every,
+        control_mode=args.control_mode,
+        seed=args.seed,
+        force_amplitude=args.force_amplitude,
+        output=args.output,
     )
     sys.stdout.flush()
     sys.stderr.flush()

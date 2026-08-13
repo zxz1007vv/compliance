@@ -2913,7 +2913,11 @@ class LeggedRobot(BaseTask):
             # create a grid of robots
             num_cols = np.floor(np.sqrt(len(env_ids)))
             num_rows = np.ceil(self.num_envs / num_cols)
-            xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols))
+            xx, yy = torch.meshgrid(
+                torch.arange(num_rows, device=self.device),
+                torch.arange(num_cols, device=self.device),
+                indexing="ij",
+            )
             spacing = cfg.env.env_spacing
             self.env_origins[env_ids, 0] = spacing * xx.flatten()[:len(env_ids)]
             self.env_origins[env_ids, 1] = spacing * yy.flatten()[:len(env_ids)]
@@ -2922,9 +2926,12 @@ class LeggedRobot(BaseTask):
     def _parse_cfg(self, cfg):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
         self.obs_scales = self.cfg.obs_scales
-        self.reward_scales = vars(self.cfg.reward_scales)
-        self.curriculum_thresholds = vars(self.cfg.curriculum_thresholds)
-        cfg.command_ranges = vars(cfg.commands)
+        # Reward preparation removes zero entries and applies dt scaling.  Keep
+        # those runtime transformations off the resolved experiment config so
+        # saved configs remain reusable for play/resume.
+        self.reward_scales = dict(vars(self.cfg.reward_scales))
+        self.curriculum_thresholds = dict(vars(self.cfg.curriculum_thresholds))
+        cfg.command_ranges = dict(vars(cfg.commands))
         if cfg.terrain.mesh_type not in ['heightfield', 'trimesh', 'boxes', 'boxes_tm']:
             cfg.terrain.curriculum = False
         self.max_episode_length_s = cfg.env.episode_length_s
@@ -2959,7 +2966,7 @@ class LeggedRobot(BaseTask):
         """
         y = torch.tensor(cfg.perception.measured_points_y, device=self.device, requires_grad=False)
         x = torch.tensor(cfg.perception.measured_points_x, device=self.device, requires_grad=False)
-        grid_x, grid_y = torch.meshgrid(x, y)
+        grid_x, grid_y = torch.meshgrid(x, y, indexing="ij")
 
         cfg.perception.num_height_points = grid_x.numel()
         points = torch.zeros(len(env_ids), cfg.perception.num_height_points, 3, device=self.device, requires_grad=False)

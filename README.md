@@ -301,26 +301,7 @@ python scripts/play.py \
 
 也可以用 `--output /path/to/result.json` 指定评估 JSON 路径。
 
-### 7.6 命令拼写规则
 
-正确：
-
-```bash
-python scripts/play.py --task=b1_z1_ik --checkpoint=latest
-```
-
-或者：
-
-```bash
-python scripts/play.py --task b1_z1_ik --checkpoint latest
-```
-
-错误示例：
-
-```bash
---taks=z1_b1_ik       # task 拼错，任务名顺序也错
--- checkpoint=latest  # “--” 和参数名之间不能有空格
-```
 
 ## 8. 日志、checkpoint 与 policy
 
@@ -412,11 +393,4 @@ resources/robots/b1_z1/
 任务特有的 play 覆盖应放在该任务的 `*_config.py` 中，并通过 `play_cfg_hook` 注册；不要把
 新机器人的参数硬编码回 `scripts/play.py`。
 
-## 11. 验证与重构报告
 
-- [V2 最终执行报告](docs/refactor_v2_final_report.md)
-- [包命名空间迁移](docs/package_namespace_migration.md)
-- [第一轮评估协议](docs/round1_closure_evaluation_protocol.md)
-
-当前结构契约覆盖配置隔离、command schema、curriculum、reward registry、sensor catalog、
-ActorCritic state-dict、历史 checkpoint 加载和 TorchScript 推理一致性。

@@ -16,6 +16,11 @@ from isaacgym.torch_utils import (
 )
 from tqdm import tqdm
 
+from b1_gym.commands import (
+    INDEX_EE_FORCE_X,
+    INDEX_EE_FORCE_Z,
+    VALID_CONTROL_MODES,
+)
 from b1_gym_learn.ppo_cse.experiment_logger import safe_name
 from utils import (
     export_policy_as_jit,
@@ -38,7 +43,7 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument(
         "--control-mode",
-        choices=("position", "force", "binary", "mixed"),
+        choices=VALID_CONTROL_MODES,
         help="Evaluation control mode; defaults to the mode saved by training",
     )
     parser.add_argument(
@@ -128,7 +133,7 @@ def update_rollout_metrics(metrics, env, rewards, dones):
     force_mode = env.force_or_position_control > 0.5
     position_mode = (~force_mode) & valid_state
     valid_force_mode = force_mode & valid_state
-    force_commands = env.commands[:, 12:15]
+    force_commands = env.commands[:, INDEX_EE_FORCE_X:INDEX_EE_FORCE_Z + 1]
     applied_forces_world = env.forces[:, env.gripper_stator_index, :3]
     base_rpy_world = torch.stack(get_euler_xyz(env.base_quat), dim=1)
     zeros = torch.zeros_like(base_rpy_world[:, 2])
@@ -275,7 +280,7 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
     video_path = None
     if record_video:
         import imageio
-        from b1_gym.sensors.floating_camera_sensor import FloatingCameraSensor
+        from b1_gym.sensors import FloatingCameraSensor
 
         cameras = [FloatingCameraSensor(env, env_idx=i) for i in range(num_envs)]
         play_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

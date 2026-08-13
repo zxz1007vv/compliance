@@ -293,6 +293,8 @@ class OnPolicyRunner:
         print("#" * width, flush=True)
 
     def save(self, path, iteration=None, infos=None):
+        from b1_gym_learn.utils.policy_export import export_policy_as_jit
+
         path = str(path)
         if iteration is None:
             iteration = self.current_learning_iteration
@@ -326,8 +328,19 @@ class OnPolicyRunner:
         if str(path) != latest_path:
             shutil.copy2(path, latest_path)
         self.logger.save(path)
+
+        policy_dir = self.logger.export_dir / "policies"
+        export_path = export_policy_as_jit(
+            self.alg.actor_critic,
+            policy_dir,
+            filename=f"policy_{iteration:06d}.pt",
+        )
+        latest_export_path = policy_dir / "policy_latest.pt"
+        shutil.copy2(export_path, latest_export_path)
+        self.logger.save(export_path)
         self.last_saved_iteration = iteration
         print(f"Saved checkpoint {iteration}: {path}", flush=True)
+        print(f"Exported policy {iteration}: {export_path}", flush=True)
 
     def load(self, path, load_optimizer=True):
         loaded = torch.load(path, map_location=self.device)

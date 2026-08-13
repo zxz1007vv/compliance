@@ -132,6 +132,19 @@ class RLStructureContracts(unittest.TestCase):
                 actual = exported(observations)
         torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
 
+    def test_policy_export_preserves_training_mode_and_rng(self):
+        torch.manual_seed(314)
+        model = self.make_model().train()
+        rng_before = torch.get_rng_state().clone()
+
+        with tempfile.TemporaryDirectory() as directory:
+            export_policy_as_jit(model, directory)
+
+        self.assertTrue(model.training)
+        self.assertTrue(model.actor_body.training)
+        self.assertTrue(model.adaptation_module.training)
+        self.assertTrue(torch.equal(rng_before, torch.get_rng_state()))
+
     def test_rollout_and_ppo_keep_training_shapes(self):
         torch.manual_seed(7)
         model = self.make_model()

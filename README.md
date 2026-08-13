@@ -105,6 +105,17 @@ The RL framework is organized by responsibility under
 `b1_gym_learn/{runners,algorithms,modules,storage}`. The historical
 `b1_gym_learn.ppo_cse` imports remain available for compatibility.
 
+Environment-facing task boundaries are exposed through
+`b1_gym/{commands,rewards,sensors,curriculum}`. Historical reward and
+curriculum import paths remain exact compatibility aliases. The command module
+owns the shared 23-dimensional command-vector contract and command lifecycle;
+all 28 sensor implementations are consolidated in `sensors/sensors.py`, with
+the historical per-sensor modules retained as exact compatibility imports.
+
+The completed V2 refactor, frozen numerical contracts, and GPU equivalence
+results are documented in
+[the final execution report](docs/refactor_v2_final_report.md).
+
 The main scripts in [scripts](scripts/) are:
 
 ```bash
@@ -153,6 +164,9 @@ logs/b1_z1_ik/<date>_<run-name>/
 │   ├── model_000400.pt
 │   └── model_latest.pt
 └── exported/
+    └── policies/
+        ├── policy_000400.pt
+        └── policy_latest.pt
 ```
 
 Checkpoints contain policy and optimizer states, iteration/runner statistics,
@@ -166,6 +180,8 @@ python scripts/train.py \
 ```
 
 The GUI is off during training by default. Pass `--viewer` to enable it.
+Each checkpoint save also exports a self-contained TorchScript inference policy;
+checkpoint and deployment artifacts remain separate.
 
 Training with the default configuration requires about 12GB of GPU memory. If you have less memory available, you can 
 still train by reducing the number of parallel environments used in simulation (the default is `Cfg.env.num_envs = 4000`).

@@ -83,6 +83,10 @@ run 由加载器按多系数一致比例自动检测并恢复。本次
 正式复测命令、阈值与回传清单见
 [round1_closure_evaluation_protocol.md](round1_closure_evaluation_protocol.md)。
 
+正式三 seed 复测现已完成并通过，Environment 边界整理的全部计划也已实施。详细
+指标、最终结构和等价性证据见
+[refactor_v2_final_report.md](refactor_v2_final_report.md)。
+
 ## Artifact 约定
 
 ```text
@@ -99,13 +103,14 @@ logs/<task>/<timestamp>_<run-name>/
 
 读取逻辑仍兼容历史 run 根目录下的 `model_<iteration>.pt`，不会迁移或删除旧实验。
 
-## 本轮刻意不做的改动
+## 算法边界
 
 - 不修改 reward 公式、权重或调用顺序。
 - 不修改 observation / privileged observation / history 的拼接顺序。
-- 不修改 command 采样、curriculum、domain randomization 或 control 流程。
+- command 采样和 curriculum 已移动到稳定边界，但公式、顺序和 RNG 消耗不变。
+- 不修改 domain randomization 或 control 流程。
 - 不修改 PPO loss、mini-batch、optimizer step 或 adaptation loss。
-- 不大拆 `legged_robot.py`，也不合并现有 sensor 文件。
+- 不大拆 `legged_robot.py` 的仿真、force 和 control 主体。
 - 不引入 HIM estimator、prototype、sinkhorn 等参考仓库算法。
 
 这些内容若继续整理，需要先增加固定 seed 的短训练轨迹对照，再单独分批执行。

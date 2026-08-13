@@ -2,39 +2,32 @@
 
 import os
 import numpy as np
-from typing import Dict, List
 
-from isaacgym import gymtorch, gymapi, gymutil
+from isaacgym import gymtorch, gymapi
 from isaacgym.torch_utils import *
 
 assert gymtorch
 import torch
 
 from b1_gym import MINI_GYM_ROOT_DIR
+from b1_gym.commands import (
+    CommandLifecycleMixin,
+    INDEX_EE_FORCE_X,
+    INDEX_EE_FORCE_Y,
+    INDEX_EE_FORCE_Z,
+    INDEX_EE_POS_PITCH_CMD,
+    INDEX_EE_POS_RADIUS_CMD,
+    INDEX_EE_POS_YAW_CMD,
+)
 from b1_gym.envs.base.base_task import BaseTask
-from b1_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, get_scale_shift, plus_2pi_wrap_to_pi
+from b1_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, get_scale_shift
 from b1_gym.utils.terrain import Terrain, perlin
 from .legged_robot_config import Cfg
 
 TRANSFORM_BASE_ARM_X = 0.2
 TRANSFORM_BASE_ARM_Z = 0.1585
 DEFAULT_BASE_HEIGHT = 0.6
-INDEX_EE_POS_RADIUS_CMD = 15
-INDEX_EE_POS_PITCH_CMD = 16
-INDEX_EE_POS_YAW_CMD = 17
-INDEX_EE_POS_TIMING_CMD = 18
-
-INDEX_EE_ROLL_CMD = 19
-INDEX_EE_PITCH_CMD = 20
-INDEX_EE_YAW_CMD = 21
-
-INDEX_EE_FORCE_X = 12
-INDEX_EE_FORCE_Y = 13
-INDEX_EE_FORCE_Z = 14
-
-INDEX_FORCE_OR_POSITION_INDICATOR = 22
-
-class LeggedRobot(BaseTask):
+class LeggedRobot(CommandLifecycleMixin, BaseTask):
     def __init__(self, cfg: Cfg, sim_params, physics_engine, sim_device, headless,
                  initial_dynamics_dict=None, terrain_props=None, custom_heightmap=None):
         """ Parses the provided config file,
@@ -243,274 +236,10 @@ class LeggedRobot(BaseTask):
 
         self._render_headless()
 
-    def is_ee_cmd_feasible(self, radius_cmd, pitch_cmd):
-        
-        commands_feasible = True
-        # Spherical to cartesian coordinates in the arm base frame 
-        z_cmd_arm = - radius_cmd*torch.sin(pitch_cmd)
-
-        # Cartesian coordinates in the world frame
-        z_cmd_world = z_cmd_arm.add_(TRANSFORM_BASE_ARM_Z + DEFAULT_BASE_HEIGHT)
-        # self.z_cmd_world = z_cmd_world
-
-        env_ids = torch.arange(radius_cmd.shape[0], device=self.device)
-        env_ids_resample = env_ids[z_cmd_world < 0.05] # 0 = no force applied 
-        if env_ids_resample.nelement() > 0 :
-            # print("resampling command for env_ids ", z_cmd_world)
-            commands_feasible = False
-
-        # print(" z_cmd_world = ", z_cmd_world, " for :r = ", radius_cmd, ', p = ', pitch_cmd)
-        return commands_feasible, env_ids_resample
-
-    def get_measured_ee_pos_spherical(self) -> torch.Tensor:
-        '''
-        Get the current ee position in the arm frame in spherical coordinates 
-
-        Returns:
-            - radius, pitch, yaw (size: (num_envs, 3))
-        '''
-        # Get gripper cartesian coordinates in world frame
-        ee_idx = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_actor_handles[0], "gripperStator")
-        ee_position_world = self.rigid_body_state[:, ee_idx, 0:3].view(self.num_envs, 3) # env.rigid_body_state.shape = (num_envs, num_rigid_bodies, 13) = (1, 24, 13)
-        
-        # Make the commands roll and pitch independent
-        base_quat_world = self.base_quat.view(self.num_envs,4)
-        base_rpy_world = torch.stack(get_euler_xyz(base_quat_world), dim=1)
-        # base_quat_world_indep = quat_from_euler_xyz(base_rpy_world[:, 0], base_rpy_world[:, 1], base_rpy_world[:, 2])
-        base_quat_world_indep = quat_from_euler_xyz(0 * base_rpy_world[:, 0], 0 * base_rpy_world[:, 1], base_rpy_world[:, 2])
-
-        # Make the commands independent from base height 
-        x_base_pos_world = self.base_pos[:, 0].view(self.num_envs, 1) 
-        y_base_pos_world = self.base_pos[:, 1].view(self.num_envs, 1) 
-        z_base_pos_world = torch.ones_like(self.base_pos[:, 2].view(self.num_envs, 1))*DEFAULT_BASE_HEIGHT
-        base_position_world = torch.cat((x_base_pos_world, y_base_pos_world, z_base_pos_world), dim=1)
-
-        # Measured ee position in the base frame
-        ee_position_base = quat_rotate_inverse(base_quat_world_indep, ee_position_world - base_position_world).view(self.num_envs,3)
-
-        # Measured ee position in the arm frame in cartesian coordinates 
-        ee_position_arm = torch.zeros_like(ee_position_base)
-        ee_position_arm[:,0] = ee_position_base[:,0].add_(-TRANSFORM_BASE_ARM_X)
-        ee_position_arm[:,1] = ee_position_base[:,1]
-        ee_position_arm[:,2] = ee_position_base[:,2].add_(-TRANSFORM_BASE_ARM_Z)
-
-        # Spherical to cartesian coordinates in the arm base frame 
-        radius = torch.norm(ee_position_arm, dim=1).view(self.num_envs,1)
-        pitch = -torch.asin(ee_position_arm[:,2].view(self.num_envs,1)/radius).view(self.num_envs,1)
-        yaw = torch.atan2(ee_position_arm[:,1].view(self.num_envs,1), ee_position_arm[:,0].view(self.num_envs,1)).view(self.num_envs,1)
-        ee_pos_sphe_arm = torch.cat((radius, pitch, yaw), dim=1).view(self.num_envs,3)
-
-        # compute error
-        radius_cmd = self.commands[:, INDEX_EE_POS_RADIUS_CMD].view(self.num_envs, 1) 
-        pitch_cmd = self.commands[:, INDEX_EE_POS_PITCH_CMD].view(self.num_envs, 1) 
-        yaw_cmd = self.commands[:, INDEX_EE_POS_YAW_CMD].view(self.num_envs, 1) 
-
-        # Spherical to cartesian coordinates in the arm base frame 
-        x_cmd_arm = radius_cmd*torch.cos(pitch_cmd)*torch.cos(yaw_cmd)
-        y_cmd_arm = radius_cmd*torch.cos(pitch_cmd)*torch.sin(yaw_cmd)
-        z_cmd_arm = - radius_cmd*torch.sin(pitch_cmd)
-
-        # Cartesian coordinates in the base frame
-        x_cmd_base = x_cmd_arm.add_(TRANSFORM_BASE_ARM_X)
-        y_cmd_base = y_cmd_arm
-        z_cmd_base = z_cmd_arm.add_(TRANSFORM_BASE_ARM_Z)
-        ee_position_cmd_base = torch.cat((x_cmd_base, y_cmd_base, z_cmd_base), dim=1)
-
-        ee_position_cmd_world = quat_rotate_inverse(quat_conjugate(base_quat_world_indep), ee_position_cmd_base) + base_position_world
-
-        # self.gripper_pos_tracking_error_buf = torch.abs(ee_position_cmd_world - ee_position_world).sum(dim=1)
-        self.gripper_pos_tracking_error_buf = torch.norm(ee_position_cmd_world - ee_position_world, dim=1)
-        # self.gripper_pos_tracking_error_buf = torch.sum(torch.square(ee_position_cmd_world - ee_position_world), dim=1)
-
-        return ee_pos_sphe_arm
-    
-    def get_measured_ee_rpy_yrf(self) -> torch.Tensor:
-        ee_idx = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_actor_handles[0], "gripperStator")
-        ee_quat = self.rigid_body_state[:, ee_idx, 3:7].view(self.num_envs, 4)
-
-        base_quat_world = self.base_quat.view(self.num_envs,4)
-        base_rpy_world = torch.stack(get_euler_xyz(base_quat_world), dim=1)
-        quat_yrf = quat_from_euler_xyz(torch.zeros_like(base_rpy_world[:, 0], dtype=torch.float, device=self.device), 
-                                    torch.zeros_like(base_rpy_world[:, 1], dtype=torch.float, device=self.device), 
-                                    base_rpy_world[:, 2])
-
-        ee_quat_yrf = quat_mul(quat_conjugate(quat_yrf), ee_quat)
-        ee_rpy_yrf = torch.stack(get_euler_xyz(ee_quat_yrf), dim=1)
-
-        ee_rpy_yrf = plus_2pi_wrap_to_pi(ee_rpy_yrf)
-
-        # get tracking error
-        ee_ori_cmd = self.commands[:, INDEX_EE_ROLL_CMD:INDEX_EE_YAW_CMD+1].clone()
-
-        roll_error = torch.minimum(torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:,0]), 
-                                        2*np.pi - torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:,0]))
-        pitch_error = torch.minimum(torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]), 
-                                        2*np.pi - torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]))
-        yaw_error = torch.minimum(torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]), 
-                                        2*np.pi - torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]))
-
-        # self.gripper_ori_tracking_error_buf = torch.stack((roll_error, pitch_error, yaw_error), dim=1).sum(dim=1)
-        self.gripper_ori_tracking_error_buf = torch.norm(torch.stack((roll_error, pitch_error, yaw_error), dim=1), dim=1)
-
-        return ee_rpy_yrf
-    
-
-    def set_gripper_teleop_value(self, value:float):
-        self.teleop_gripper_value = value*torch.ones_like(self.teleop_gripper_value)
-
-    def set_joint6_teleop_value(self, value:float):
-        self.teleop_joint6_value = value*torch.ones_like(self.teleop_joint6_value)
-
-    def set_trajectory_time(self, value:float):
-        self.trajectory_time = value*torch.ones_like(self.trajectory_time)
-
-    def set_initial_ee_pos(self):
-        self.initial_ee_pos = self.get_measured_ee_pos_spherical()
-
-    def set_initial_ee_rpy(self):
-        self.initial_ee_rpy = self.get_measured_ee_rpy_yrf()
-
-    def set_target_joint_angles(self, target_joints: List[float]):
-        self.target_joint_values = target_joints
-
     def set_pd_gains(self):
         self.p_gains[17] = self.p_gains[17]*6/4
         self.d_gains[17] = self.d_gains[17]*6/4
 
-
-    def compute_intermediate_ee_pos_command(self, env_ids):
-        '''
-        The ee position commands in spherical coordinates (radius, pitch, yaw)
-
-        Args:
-            env_ids (list[int]): List of environment ids which have been reset
-
-        self.reset_buf starts with 1's -> every env is reset at the very beginning -> ee_target_pos_cmd is defined 
-        '''
-
-        # update ee pos meas
-        ee_pos_meas = self.get_measured_ee_pos_spherical()
-        ee_rpy_meas = self.get_measured_ee_rpy_yrf()
-
-        # Init current and target ee positions only once for all envs
-        if self.init_training:
-            self.init_training = False
-
-            # Define the new long term target ee position command 
-            self.ee_target_pos_cmd = self.commands[:, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)].view(self.num_envs, 3).clone() # radius, pitch, yaw
-            self.ee_target_rpy_cmd = self.commands[:, INDEX_EE_ROLL_CMD:(INDEX_EE_YAW_CMD+1)].view(self.num_envs, 3).clone()
-            
-            # Define the first ee position
-            self.first_ee_pos = ee_pos_meas
-            self.initial_ee_pos[:] = self.first_ee_pos[:]
-            self.first_ee_rpy = ee_rpy_meas
-            self.initial_ee_rpy[:] = self.first_ee_rpy[:]
-
-            # print("first_ee_pos: ", self.first_ee_pos)
-            # print("first_ee_rpy: ", self.first_ee_rpy)
-
-            # input((self.first_ee_pos, self.first_ee_rpy))
-        
-        # When some envs have been reset, a new target ee position command is resampled in reset_idx, need to update first ee pos and target ee pos  
-        if len(env_ids) > 0:
-            # print("--reset")
-            # Reset trajectory time 
-            self.trajectory_time[env_ids] = 0.0
-
-            # Define the new long term target ee position command 
-            self.ee_target_pos_cmd[env_ids] = self.commands[env_ids, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)].view(len(env_ids), 3) # radius, pitch, yaw
-            self.ee_target_rpy_cmd[env_ids] = self.commands[env_ids, INDEX_EE_ROLL_CMD:(INDEX_EE_YAW_CMD+1)].view(len(env_ids), 3)
-            
-            # # Define the first ee position
-            self.initial_ee_pos[env_ids] = ee_pos_meas[env_ids, :]#self.first_ee_pos[env_ids, :]
-            self.initial_ee_rpy[env_ids] = ee_rpy_meas[env_ids, :]#self.first_ee_rpy[env_ids, :]
-
-            self._resample_force_or_position_control(env_ids)
-
-        # Interpolate intermediary ee position commands 
-        T_traj = self.commands[:, INDEX_EE_POS_TIMING_CMD] # size num_envs
-
-        # Make sure that the interpolated target ee position saturates after T_traj
-        
-        env_ids_inter = (self.trajectory_time.view(self.num_envs) < T_traj).nonzero(as_tuple=False).flatten()
-
-        self.commands[:, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)] = self.ee_target_pos_cmd.view(self.num_envs,3)
-        self.commands[:, INDEX_EE_ROLL_CMD:(INDEX_EE_YAW_CMD+1)] = self.ee_target_rpy_cmd.view(self.num_envs,3)
-        self.commands[:, INDEX_FORCE_OR_POSITION_INDICATOR] = self.force_or_position_control.view(self.num_envs)
-
-        if self.cfg.commands.interpolate_ee_cmds:
-            if len(env_ids_inter):
-                new_command = self.trajectory_time.view(self.num_envs,1)/T_traj.view(self.num_envs,1)*self.ee_target_pos_cmd.view(self.num_envs,3) + (1 - self.trajectory_time.view(self.num_envs,1)/T_traj.view(self.num_envs,1))*self.initial_ee_pos.view(self.num_envs,3)
-                self.commands[env_ids_inter, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)] = new_command[env_ids_inter, :]
-                #print("Next cmd:   ", self.commands[env_ids_inter, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)])
-                drpy = plus_2pi_wrap_to_pi(self.ee_target_rpy_cmd - self.initial_ee_rpy)
-                assert not torch.any(torch.abs(drpy) > np.pi)
-                new_rpy_command = plus_2pi_wrap_to_pi(self.initial_ee_rpy + self.trajectory_time.view(self.num_envs,1)/T_traj.view(self.num_envs,1)*drpy)
-                new_rpy_command[:, 0] = torch.clamp(new_rpy_command[:, 0], self.cfg.commands.limit_end_effector_roll[0], self.cfg.commands.limit_end_effector_roll[1])
-                new_rpy_command[:, 1] = torch.clamp(new_rpy_command[:, 1], self.cfg.commands.limit_end_effector_pitch[0], self.cfg.commands.limit_end_effector_pitch[1])
-                new_rpy_command[:, 2] = torch.clamp(new_rpy_command[:, 2], self.cfg.commands.limit_end_effector_yaw[0], self.cfg.commands.limit_end_effector_yaw[1])
-                self.commands[env_ids_inter, INDEX_EE_ROLL_CMD:(INDEX_EE_YAW_CMD+1)] = new_rpy_command[env_ids_inter, :]
-        
-                # print("inter ee pos", self.commands[env_ids_inter, INDEX_EE_POS_RADIUS_CMD:(INDEX_EE_POS_YAW_CMD+1)])
-                # print("inter ee rpy", self.commands[env_ids_inter, INDEX_EE_ROLL_CMD:(INDEX_EE_YAW_CMD+1)])
-                # print("current ee pos", ee_pos_meas)
-                # print("current ee rpy", ee_rpy_meas)
-                # print("goal ee pos", self.ee_target_pos_cmd[env_ids_inter, :])
-                # print("goal ee rpy", self.ee_target_rpy_cmd[env_ids_inter, :])
-
-        # Resample commands 2 seconds after reaching the target 
-        env_ids_resample = (self.trajectory_time.view(self.num_envs) > (T_traj + self.cfg.commands.settle_time)).nonzero(as_tuple=False).flatten()
-        if self.cfg.commands.interpolate_ee_cmds:
-            if len(env_ids_resample):
-                # print("T_traj + self.cfg.commands.settle_time : ", T_traj + self.cfg.commands.settle_time)
-                # Reset trajectory time 
-                self.trajectory_time[env_ids_resample] = 0.0
-
-                # Define the new long term target ee position command 
-                new_radius_cmd = torch_rand_float(self.cfg.commands.ee_sphe_radius[0], self.cfg.commands.ee_sphe_radius[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                new_pitch_cmd = torch_rand_float(self.cfg.commands.ee_sphe_pitch[0], self.cfg.commands.ee_sphe_pitch[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                new_yaw_cmd = torch_rand_float(self.cfg.commands.ee_sphe_yaw[0], self.cfg.commands.ee_sphe_yaw[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                #new_T_cmd = torch_rand_float(self.cfg.commands.ee_timing[0], self.cfg.commands.ee_timing[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample)) 
-                # new_T_cmd = torch_rand_float(3.98, 4.02, (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))                     
-
-                new_roll_ori_cmd = torch_rand_float(self.cfg.commands.end_effector_roll[0], self.cfg.commands.end_effector_roll[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                new_pitch_ori_cmd = torch_rand_float(self.cfg.commands.end_effector_pitch[0], self.cfg.commands.end_effector_pitch[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                new_yaw_ori_cmd = torch_rand_float(self.cfg.commands.end_effector_yaw[0], self.cfg.commands.end_effector_yaw[1], (len(env_ids_resample), 1), device=self.device).view(len(env_ids_resample))
-                                                    
-                # Resample commands until they are all above the ground 
-                commands_feasible, env_ids_reresample = self.is_ee_cmd_feasible(new_radius_cmd, new_pitch_cmd)
-                while not commands_feasible:
-                    # print("in resample")
-                    new_radius_cmd[env_ids_reresample] = torch_rand_float(self.cfg.commands.ee_sphe_radius[0], self.cfg.commands.ee_sphe_radius[1], (len(env_ids_reresample), 1), device=self.device).view(len(env_ids_reresample))
-                    new_pitch_cmd[env_ids_reresample] = torch_rand_float(self.cfg.commands.ee_sphe_pitch[0], self.cfg.commands.ee_sphe_pitch[1], (len(env_ids_reresample), 1), device=self.device).view(len(env_ids_reresample))
-                    
-                    commands_feasible, env_ids_reresample = self.is_ee_cmd_feasible(new_radius_cmd, new_pitch_cmd)
-                
-                
-                # Define the first ee position
-                # self.initial_ee_pos[env_ids_resample] = self.initial_ee_pos[env_ids_resample, :]
-                # self.initial_ee_rpy[env_ids_resample] = self.initial_ee_rpy[env_ids_resample, :]
-                self.initial_ee_pos[env_ids_resample] = self.ee_target_pos_cmd[env_ids_resample, :]
-                self.initial_ee_rpy[env_ids_resample] = self.ee_target_rpy_cmd[env_ids_resample, :]
-                # print("Resample current cmd: ", self.initial_ee_pos)  
-                
-                # print("Final command: ", self.z_cmd_world)
-                self.ee_target_pos_cmd[env_ids_resample, 0] = new_radius_cmd
-                self.ee_target_pos_cmd[env_ids_resample, 1] = new_pitch_cmd
-                self.ee_target_pos_cmd[env_ids_resample, 2] = new_yaw_cmd
-
-                self.ee_target_rpy_cmd[env_ids_resample, 0] = new_roll_ori_cmd
-                self.ee_target_rpy_cmd[env_ids_resample, 1] = new_pitch_ori_cmd
-                self.ee_target_rpy_cmd[env_ids_resample, 2] = new_yaw_ori_cmd
-
-
-                # print("Resample target cmd: ", self.ee_target_pos_cmd, "T ",self.commands[env_ids_resample, INDEX_EE_POS_TIMING_CMD])
-          
-
-        # Increase the time 
-        self.trajectory_time += self.dt
-
-        # print("self.commands[0, 15] =", self.commands[0, INDEX_EE_POS_RADIUS_CMD])
 
     def randomize_ball_state(self):
         reset_ball_pos_mark = np.random.choice([True, False],self.num_envs, p=[self.cfg.ball.pos_reset_prob,1-self.cfg.ball.pos_reset_prob])
@@ -788,22 +517,28 @@ class LeggedRobot(BaseTask):
     def initialize_sensors(self):
         """ Initializes sensors
         """
-        from b1_gym.sensors import ALL_SENSORS
+        from b1_gym.sensors import make_sensor
+
         self.sensors = []
         for sensor_name in self.cfg.sensors.sensor_names:
-            if sensor_name in ALL_SENSORS.keys():
-                self.sensors.append(ALL_SENSORS[sensor_name](self, **self.cfg.sensors.sensor_args[sensor_name]))
-            else:
-                raise ValueError(f"Sensor {sensor_name} not found.")
+            self.sensors.append(
+                make_sensor(
+                    sensor_name,
+                    self,
+                    self.cfg.sensors.sensor_args[sensor_name],
+                )
+            )
 
         # privileged sensors
         self.privileged_sensors = []
         for privileged_sensor_name in self.cfg.sensors.privileged_sensor_names:
-            if privileged_sensor_name in ALL_SENSORS.keys():
-                # print(privileged_sensor_name)
-                self.privileged_sensors.append(ALL_SENSORS[privileged_sensor_name](self, **self.cfg.sensors.privileged_sensor_args[privileged_sensor_name]))
-            else:
-                raise ValueError(f"Sensor {privileged_sensor_name} not found.")
+            self.privileged_sensors.append(
+                make_sensor(
+                    privileged_sensor_name,
+                    self,
+                    self.cfg.sensors.privileged_sensor_args[privileged_sensor_name],
+                )
+            )
         
 
         # initialize noise vec
@@ -1266,254 +1001,6 @@ class LeggedRobot(BaseTask):
             self._randomize_rigid_body_props(env_ids, self.cfg)
             self.refresh_actor_rigid_shape_props(env_ids, self.cfg)
 
-    def _resample_commands(self, env_ids):
-
-        if len(env_ids) == 0: return
-
-        timesteps = int(self.cfg.commands.resampling_time / self.dt)
-        ep_len = min(self.cfg.env.max_episode_length, timesteps)
-
-
-        # update curricula based on terminated environment bins and categories
-        for i, (category, curriculum) in enumerate(zip(self.category_names, self.curricula)):
-            env_ids_in_category = self.env_command_categories[env_ids.cpu()] == i
-            if isinstance(env_ids_in_category, np.bool_) or len(env_ids_in_category) == 1:
-                env_ids_in_category = torch.tensor([env_ids_in_category], dtype=torch.bool)
-            elif len(env_ids_in_category) == 0:
-                continue
-
-            # env_ids_in_category = env_ids[env_ids_in_category]
-            env_ids_in_category = env_ids
-
-            task_rewards, success_thresholds = [], []
-            for key in ["tracking_lin_vel", "tracking_ang_vel", "tracking_contacts_shaped_force",
-                        "tracking_contacts_shaped_vel"]:
-                if key in self.command_sums.keys():
-                    task_rewards.append(self.command_sums[key][env_ids_in_category] / ep_len)
-                    success_thresholds.append(self.curriculum_thresholds[key] * self.reward_scales[key])
-
-            old_bins = self.env_command_bins[env_ids_in_category.cpu().numpy()]
-            if len(success_thresholds) > 0:
-                
-                    
-                # if self.cfg.commands.control_ee_ori:
-                #     curriculum.update(old_bins, task_rewards, success_thresholds,
-                #                     local_range=np.array(
-                #                         [0.55, 0.55, 0.55, 0.55, 0.35, 0.25, 0.25, 0.25, 0.25, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                #                             0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0]))
-                # elif self.cfg.commands.control_ee_ori_only_yaw:
-                #     curriculum.update(old_bins, task_rewards, success_thresholds,
-                #                     local_range=np.array(
-                #                         [0.55, 0.55, 0.55, 0.55, 0.35, 0.25, 0.25, 0.25, 0.25, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                #                             0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0]))
-                # else:
-                curriculum.update(old_bins, task_rewards, success_thresholds,
-                            local_range=np.array(
-                                [0.55, 0.55, 0.55, 0.55, 0.35, 0.25, 0.25, 0.25, 0.25, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
-                                0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0]))
-        # assign resampled environments to new categories
-        random_env_floats = torch.rand(len(env_ids), device=self.device)
-        probability_per_category = 1. / len(self.category_names)
-        category_env_ids = [env_ids[torch.logical_and(probability_per_category * i <= random_env_floats,
-                                                      random_env_floats < probability_per_category * (i + 1))] for i in
-                            range(len(self.category_names))]
-
-        # sample from new category curricula
-        for i, (category, env_ids_in_category, curriculum) in enumerate(
-                zip(self.category_names, category_env_ids, self.curricula)):
-
-            batch_size = len(env_ids_in_category)
-            if batch_size == 0: continue
-
-            new_commands, new_bin_inds = curriculum.sample(batch_size=batch_size)
-
-            self.env_command_bins[env_ids_in_category.cpu().numpy()] = new_bin_inds
-            self.env_command_categories[env_ids_in_category.cpu().numpy()] = i
-
-            self.commands[env_ids_in_category, :] = torch.Tensor(new_commands[:, :self.cfg.commands.num_commands]).to(
-                self.device)
-
-            # print(self.commands[0, 0:3])
-
-
-
-        if self.cfg.commands.num_commands > 5:
-            if self.cfg.commands.gaitwise_curricula:
-                for i, (category, env_ids_in_category) in enumerate(zip(self.category_names, category_env_ids)):
-                    if category == "pronk":  # pronking
-                        self.commands[env_ids_in_category, 5] = (self.commands[env_ids_in_category, 5] / 2 - 0.25) % 1
-                        self.commands[env_ids_in_category, 6] = (self.commands[env_ids_in_category, 6] / 2 - 0.25) % 1
-                        self.commands[env_ids_in_category, 7] = (self.commands[env_ids_in_category, 7] / 2 - 0.25) % 1
-                    elif category == "trot":  # trotting
-                        self.commands[env_ids_in_category, 5] = self.commands[env_ids_in_category, 5] / 2 + 0.25
-                        self.commands[env_ids_in_category, 6] = 0
-                        self.commands[env_ids_in_category, 7] = 0
-                    elif category == "pace":  # pacing
-                        self.commands[env_ids_in_category, 5] = 0
-                        self.commands[env_ids_in_category, 6] = self.commands[env_ids_in_category, 6] / 2 + 0.25
-                        self.commands[env_ids_in_category, 7] = 0
-                    elif category == "bound":  # bounding
-                        self.commands[env_ids_in_category, 5] = 0
-                        self.commands[env_ids_in_category, 6] = 0
-                        self.commands[env_ids_in_category, 7] = self.commands[env_ids_in_category, 7] / 2 + 0.25
-
-            elif self.cfg.commands.exclusive_phase_offset:
-                random_env_floats = torch.rand(len(env_ids), device=self.device)
-                trotting_envs = env_ids[random_env_floats < 0.34]
-                pacing_envs = env_ids[torch.logical_and(0.34 <= random_env_floats, random_env_floats < 0.67)]
-                bounding_envs = env_ids[0.67 <= random_env_floats]
-                self.commands[pacing_envs, 5] = 0
-                self.commands[bounding_envs, 5] = 0
-                self.commands[trotting_envs, 6] = 0
-                self.commands[bounding_envs, 6] = 0
-                self.commands[trotting_envs, 7] = 0
-                self.commands[pacing_envs, 7] = 0
-
-            elif self.cfg.commands.balance_gait_distribution:
-                random_env_floats = torch.rand(len(env_ids), device=self.device)
-                pronking_envs = env_ids[random_env_floats <= 0.25]
-                trotting_envs = env_ids[torch.logical_and(0.25 <= random_env_floats, random_env_floats < 0.50)]
-                pacing_envs = env_ids[torch.logical_and(0.50 <= random_env_floats, random_env_floats < 0.75)]
-                bounding_envs = env_ids[0.75 <= random_env_floats]
-                self.commands[pronking_envs, 5] = (self.commands[pronking_envs, 5] / 2 - 0.25) % 1
-                self.commands[pronking_envs, 6] = (self.commands[pronking_envs, 6] / 2 - 0.25) % 1
-                self.commands[pronking_envs, 7] = (self.commands[pronking_envs, 7] / 2 - 0.25) % 1
-                self.commands[trotting_envs, 6] = 0
-                self.commands[trotting_envs, 7] = 0
-                self.commands[pacing_envs, 5] = 0
-                self.commands[pacing_envs, 7] = 0
-                self.commands[bounding_envs, 5] = 0
-                self.commands[bounding_envs, 6] = 0
-                self.commands[trotting_envs, 5] = self.commands[trotting_envs, 5] / 2 + 0.25
-                self.commands[pacing_envs, 6] = self.commands[pacing_envs, 6] / 2 + 0.25
-                self.commands[bounding_envs, 7] = self.commands[bounding_envs, 7] / 2 + 0.25
-
-            if self.cfg.commands.binary_phases:
-                self.commands[env_ids, 5] = (torch.round(2 * self.commands[env_ids, 5])) / 2.0 % 1
-                self.commands[env_ids, 6] = (torch.round(2 * self.commands[env_ids, 6])) / 2.0 % 1
-                self.commands[env_ids, 7] = (torch.round(2 * self.commands[env_ids, 7])) / 2.0 % 1
-
-        # # setting the smaller commands to zero
-        # self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
-
-        # reset command sums
-        for key in self.command_sums.keys():
-            self.command_sums[key][env_ids] = 0.
-            
-        # respect command constriction
-        self._update_command_ranges(env_ids)
-            
-        # heading commands
-        if self.cfg.commands.heading_command:
-            self.heading_commands[env_ids] = torch_rand_float(self.cfg.commands.heading[0],
-                                                         self.cfg.commands.heading[1], (len(env_ids), 1),
-                                                         device=self.device).squeeze(1)
-            
-        if self.cfg.commands.gait_phase_cmd_range[0] == self.cfg.commands.gait_phase_cmd_range[1]:
-            self.commands[env_ids_in_category, 5] = self.cfg.commands.gait_phase_cmd_range[0]
-        if self.cfg.commands.gait_offset_cmd_range[0] == self.cfg.commands.gait_offset_cmd_range[1]:
-            self.commands[env_ids_in_category, 6] = self.cfg.commands.gait_offset_cmd_range[0]
-        if self.cfg.commands.gait_bound_cmd_range[0] == self.cfg.commands.gait_bound_cmd_range[1]:
-            self.commands[env_ids_in_category, 7] = self.cfg.commands.gait_bound_cmd_range[0]
-
-    def _step_contact_targets(self):
-        # if self.cfg.env.observe_gait_commands:
-        frequencies = self.commands[:, 4]
-        phases = self.commands[:, 5]
-        offsets = self.commands[:, 6]
-        bounds = self.commands[:, 7]
-        durations = self.commands[:, 8]
-        self.gait_indices = torch.remainder(self.gait_indices + self.dt * frequencies, 1.0)
-
-        if self.cfg.commands.pacing_offset:
-            foot_indices = [self.gait_indices + phases + offsets + bounds,
-                            self.gait_indices + bounds,
-                            self.gait_indices + offsets,
-                            self.gait_indices + phases]
-        else:
-            foot_indices = [self.gait_indices + phases + offsets + bounds,
-                            self.gait_indices + offsets,
-                            self.gait_indices + bounds,
-                            self.gait_indices + phases]
-
-        self.foot_indices = torch.remainder(torch.cat([foot_indices[i].unsqueeze(1) for i in range(4)], dim=1), 1.0)
-
-        for idxs in foot_indices:
-            stance_idxs = torch.remainder(idxs, 1) < durations
-            swing_idxs = torch.remainder(idxs, 1) > durations
-
-            idxs[stance_idxs] = torch.remainder(idxs[stance_idxs], 1) * (0.5 / durations[stance_idxs])
-            idxs[swing_idxs] = 0.5 + (torch.remainder(idxs[swing_idxs], 1) - durations[swing_idxs]) * (
-                        0.5 / (1 - durations[swing_idxs]))
-
-        # if self.cfg.commands.durations_warp_clock_inputs:
-
-        self.clock_inputs[:, 0] = torch.sin(2 * np.pi * foot_indices[0])
-        self.clock_inputs[:, 1] = torch.sin(2 * np.pi * foot_indices[1])
-        self.clock_inputs[:, 2] = torch.sin(2 * np.pi * foot_indices[2])
-        self.clock_inputs[:, 3] = torch.sin(2 * np.pi * foot_indices[3])
-
-        self.doubletime_clock_inputs[:, 0] = torch.sin(4 * np.pi * foot_indices[0])
-        self.doubletime_clock_inputs[:, 1] = torch.sin(4 * np.pi * foot_indices[1])
-        self.doubletime_clock_inputs[:, 2] = torch.sin(4 * np.pi * foot_indices[2])
-        self.doubletime_clock_inputs[:, 3] = torch.sin(4 * np.pi * foot_indices[3])
-
-        self.halftime_clock_inputs[:, 0] = torch.sin(np.pi * foot_indices[0])
-        self.halftime_clock_inputs[:, 1] = torch.sin(np.pi * foot_indices[1])
-        self.halftime_clock_inputs[:, 2] = torch.sin(np.pi * foot_indices[2])
-        self.halftime_clock_inputs[:, 3] = torch.sin(np.pi * foot_indices[3])
-
-        # von mises distribution
-        kappa = self.cfg.rewards.kappa_gait_probs
-        smoothing_cdf_start = torch.distributions.normal.Normal(0,
-                                                                kappa).cdf  # (x) + torch.distributions.normal.Normal(1, kappa).cdf(x)) / 2
-
-        smoothing_multiplier_FL = (smoothing_cdf_start(torch.remainder(foot_indices[0], 1.0)) * (
-                1 - smoothing_cdf_start(torch.remainder(foot_indices[0], 1.0) - 0.5)) +
-                                    smoothing_cdf_start(torch.remainder(foot_indices[0], 1.0) - 1) * (
-                                            1 - smoothing_cdf_start(
-                                        torch.remainder(foot_indices[0], 1.0) - 0.5 - 1)))
-        smoothing_multiplier_FR = (smoothing_cdf_start(torch.remainder(foot_indices[1], 1.0)) * (
-                1 - smoothing_cdf_start(torch.remainder(foot_indices[1], 1.0) - 0.5)) +
-                                    smoothing_cdf_start(torch.remainder(foot_indices[1], 1.0) - 1) * (
-                                            1 - smoothing_cdf_start(
-                                        torch.remainder(foot_indices[1], 1.0) - 0.5 - 1)))
-        smoothing_multiplier_RL = (smoothing_cdf_start(torch.remainder(foot_indices[2], 1.0)) * (
-                1 - smoothing_cdf_start(torch.remainder(foot_indices[2], 1.0) - 0.5)) +
-                                    smoothing_cdf_start(torch.remainder(foot_indices[2], 1.0) - 1) * (
-                                            1 - smoothing_cdf_start(
-                                        torch.remainder(foot_indices[2], 1.0) - 0.5 - 1)))
-        smoothing_multiplier_RR = (smoothing_cdf_start(torch.remainder(foot_indices[3], 1.0)) * (
-                1 - smoothing_cdf_start(torch.remainder(foot_indices[3], 1.0) - 0.5)) +
-                                    smoothing_cdf_start(torch.remainder(foot_indices[3], 1.0) - 1) * (
-                                            1 - smoothing_cdf_start(
-                                        torch.remainder(foot_indices[3], 1.0) - 0.5 - 1)))
-
-        self.desired_contact_states[:, 0] = smoothing_multiplier_FL
-        self.desired_contact_states[:, 1] = smoothing_multiplier_FR
-        self.desired_contact_states[:, 2] = smoothing_multiplier_RL
-        self.desired_contact_states[:, 3] = smoothing_multiplier_RR
-
-        env_ids = torch.arange(self.num_envs, device=self.device)
-        static_env_ids = env_ids[torch.logical_and(torch.logical_and(torch.abs(self.commands[:, 0]) < 0.2, torch.abs(self.commands[:, 1]) < 0.2), torch.abs(self.commands[:, 2]) < 0.2)]
-
-        self.desired_contact_states[static_env_ids, 0] = 1.0
-        self.desired_contact_states[static_env_ids, 1] = 1.0
-        self.desired_contact_states[static_env_ids, 2] = 1.0
-        self.desired_contact_states[static_env_ids, 3] = 1.0
-
-        self.clock_inputs[static_env_ids, 0] = 1.0
-        self.clock_inputs[static_env_ids, 1] = 1.0
-        self.clock_inputs[static_env_ids, 2] = 1.0
-        self.clock_inputs[static_env_ids, 3] = 1.0
-
-
-
-        # print("self.foot_indices", self.foot_indices, " self.desired_contact_states", self.desired_contact_states, " self.clock_inputs", self.clock_inputs)
-
-        if self.cfg.commands.num_commands > 9:
-            self.desired_footswing_height = self.commands[:, 9]
-
     def _compute_torques(self, actions):
         """ Compute torques from actions.
             Actions can be interpreted as position or velocity targets given to a PD controller, or directly as scaled torques.
@@ -1962,14 +1449,6 @@ class LeggedRobot(BaseTask):
         self.path_distance[env_ids] += distance_traversed
         self.past_base_pos[env_ids] = self.base_pos.clone()[env_ids]
 
-    def _update_command_ranges(self, env_ids):
-        constrict_indices = self.cfg.rewards.constrict_indices
-        constrict_ranges = self.cfg.rewards.constrict_ranges
-
-        if self.cfg.rewards.constrict and self.common_step_counter >= self.cfg.rewards.constrict_after:
-            for idx, range in zip(constrict_indices, constrict_ranges):
-                self.commands[env_ids, idx] = range[0]
-
     def _teleport_robots(self, env_ids, cfg):
         """ Teleports any robots that are too close to the edge to the other side
         """
@@ -2391,162 +1870,16 @@ class LeggedRobot(BaseTask):
         if self.cfg.commands.sample_feasible_commands:
             self.target_joint_values = [0.0]*self.num_actuated_dof
 
-    def _init_command_distribution(self, env_ids):
-        # new style curriculum
-        self.category_names = ['nominal']
-        if self.cfg.commands.gaitwise_curricula:
-            self.category_names = ['pronk', 'trot', 'pace', 'bound']
-
-        if self.cfg.commands.curriculum_type == "RewardThresholdCurriculum":
-            from .curriculum import RewardThresholdCurriculum
-            CurriculumClass = RewardThresholdCurriculum
-        self.curricula = []
-        for category in self.category_names:
-            self.curricula += [CurriculumClass(seed=self.cfg.commands.curriculum_seed,
-                                                        x_vel=(self.cfg.commands.limit_vel_x[0],
-                                                                self.cfg.commands.limit_vel_x[1],
-                                                                self.cfg.commands.num_bins_vel_x),
-                                                        y_vel=(self.cfg.commands.limit_vel_y[0],
-                                                                self.cfg.commands.limit_vel_y[1],
-                                                                self.cfg.commands.num_bins_vel_y),
-                                                        yaw_vel=(self.cfg.commands.limit_vel_yaw[0],
-                                                                    self.cfg.commands.limit_vel_yaw[1],
-                                                                    self.cfg.commands.num_bins_vel_yaw),
-                                                        body_height=(self.cfg.commands.limit_body_height[0],
-                                                                        self.cfg.commands.limit_body_height[1],
-                                                                        self.cfg.commands.num_bins_body_height),
-                                                        gait_frequency=(self.cfg.commands.limit_gait_frequency[0],
-                                                                        self.cfg.commands.limit_gait_frequency[1],
-                                                                        self.cfg.commands.num_bins_gait_frequency),
-                                                        gait_phase=(self.cfg.commands.limit_gait_phase[0],
-                                                                    self.cfg.commands.limit_gait_phase[1],
-                                                                    self.cfg.commands.num_bins_gait_phase),
-                                                        gait_offset=(self.cfg.commands.limit_gait_offset[0],
-                                                                        self.cfg.commands.limit_gait_offset[1],
-                                                                        self.cfg.commands.num_bins_gait_offset),
-                                                        gait_bounds=(self.cfg.commands.limit_gait_bound[0],
-                                                                        self.cfg.commands.limit_gait_bound[1],
-                                                                        self.cfg.commands.num_bins_gait_bound),
-                                                        gait_duration=(self.cfg.commands.limit_gait_duration[0],
-                                                                        self.cfg.commands.limit_gait_duration[1],
-                                                                        self.cfg.commands.num_bins_gait_duration),
-                                                        footswing_height=(self.cfg.commands.limit_footswing_height[0],
-                                                                            self.cfg.commands.limit_footswing_height[1],
-                                                                            self.cfg.commands.num_bins_footswing_height),
-                                                        body_pitch=(self.cfg.commands.limit_body_pitch[0],
-                                                                    self.cfg.commands.limit_body_pitch[1],
-                                                                    self.cfg.commands.num_bins_body_pitch),
-                                                        body_roll=(self.cfg.commands.limit_body_roll[0],
-                                                                    self.cfg.commands.limit_body_roll[1],
-                                                                    self.cfg.commands.num_bins_body_roll),
-                                                        stance_width=(0, 0, 1),#(self.cfg.commands.limit_ee_force_magnitude[0],
-                                                                        #self.cfg.commands.limit_ee_force_magnitude[1],
-                                                                        #self.cfg.commands.num_bins_stance_width),
-                                                        stance_length=(0, 0, 1),#(self.cfg.commands.limit_ee_force_magnitude[0],
-                                                                            #self.cfg.commands.limit_ee_force_magnitude[1],
-                                                                            #self.cfg.commands.num_bins_stance_length),
-                                                        aux_reward_coef=(0, 0, 1),#(self.cfg.commands.limit_ee_force_z[0],
-                                                                    # self.cfg.commands.limit_ee_force_z[1],
-                                                                    # self.cfg.commands.num_bins_aux_reward_coef),
-                                                        ee_sphe_radius=(self.cfg.commands.limit_ee_sphe_radius[0],
-                                                                    self.cfg.commands.limit_ee_sphe_radius[1],
-                                                                    self.cfg.commands.num_bins_ee_sphe_radius),   
-                                                        ee_sphe_pitch=(self.cfg.commands.limit_ee_sphe_pitch[0],
-                                                                    self.cfg.commands.limit_ee_sphe_pitch[1],
-                                                                    self.cfg.commands.num_bins_ee_sphe_pitch),   
-                                                        ee_sphe_yaw=(self.cfg.commands.limit_ee_sphe_yaw[0],
-                                                                    self.cfg.commands.limit_ee_sphe_yaw[1],
-                                                                    self.cfg.commands.num_bins_ee_sphe_yaw),    
-                                                        ee_timing=(self.cfg.commands.limit_ee_timing[0],
-                                                                    self.cfg.commands.limit_ee_timing[1],
-                                                                    self.cfg.commands.num_bins_ee_timing),                                                                                                              
-                                                        # end_effector_pos_x=(self.cfg.commands.limit_end_effector_pos_x[0],
-                                                        #                     self.cfg.commands.limit_end_effector_pos_x[1],
-                                                        #                     self.cfg.commands.num_bins_end_effector_pos_x),
-                                                        # end_effector_pos_y=(self.cfg.commands.limit_end_effector_pos_y[0],
-                                                        #                     self.cfg.commands.limit_end_effector_pos_y[1],
-                                                        #                     self.cfg.commands.num_bins_end_effector_pos_y),    
-                                                        # end_effector_pos_z=(self.cfg.commands.limit_end_effector_pos_z[0],
-                                                        #                     self.cfg.commands.limit_end_effector_pos_z[1],
-                                                        #                     self.cfg.commands.num_bins_end_effector_pos_z),      
-                                                        end_effector_roll=(self.cfg.commands.limit_end_effector_roll[0],
-                                                                            self.cfg.commands.limit_end_effector_roll[1],
-                                                                            self.cfg.commands.num_bins_end_effector_roll),      
-                                                        end_effector_pitch=(self.cfg.commands.limit_end_effector_pitch[0],
-                                                                            self.cfg.commands.limit_end_effector_pitch[1],
-                                                                            self.cfg.commands.num_bins_end_effector_pitch),   
-                                                        end_effector_yaw=(self.cfg.commands.limit_end_effector_yaw[0],
-                                                                            self.cfg.commands.limit_end_effector_yaw[1],
-                                                                            self.cfg.commands.num_bins_end_effector_yaw),   
-                                                        # end_effector_gripper=(self.cfg.commands.limit_end_effector_gripper[0],
-                                                        #                     self.cfg.commands.limit_end_effector_gripper[1],
-                                                        #                     self.cfg.commands.num_bins_end_effector_gripper),                                                                                                                                                                                                                                                                                                                                                              
-                                                        force_or_position_mode=(0, 1, 1),   
-                                                        )
-                                ]
-        self.env_command_bins = np.zeros(len(env_ids), dtype=np.int32)
-        self.env_command_categories = np.zeros(len(env_ids), dtype=np.int32)    
-
-        
-        low = np.array(
-            [self.cfg.commands.lin_vel_x[0], self.cfg.commands.lin_vel_y[0],
-            self.cfg.commands.ang_vel_yaw[0], self.cfg.commands.body_height_cmd[0],
-            self.cfg.commands.gait_frequency_cmd_range[0],
-            self.cfg.commands.gait_phase_cmd_range[0], self.cfg.commands.gait_offset_cmd_range[0],
-            self.cfg.commands.gait_bound_cmd_range[0], self.cfg.commands.gait_duration_cmd_range[0],
-            self.cfg.commands.footswing_height_range[0], self.cfg.commands.body_pitch_range[0],
-            self.cfg.commands.body_roll_range[0],self.cfg.commands.ee_force_magnitude[0],
-            self.cfg.commands.ee_force_direction_angle[0], self.cfg.commands.ee_force_z[0], 
-            self.cfg.commands.ee_sphe_radius[0], self.cfg.commands.ee_sphe_pitch[0], 
-            self.cfg.commands.ee_sphe_yaw[0], self.cfg.commands.ee_timing[0],
-            self.cfg.commands.end_effector_roll[0], self.cfg.commands.end_effector_pitch[0], 
-            self.cfg.commands.end_effector_yaw[0], 0])
-        high = np.array(
-            [self.cfg.commands.lin_vel_x[1], self.cfg.commands.lin_vel_y[1],
-            self.cfg.commands.ang_vel_yaw[1], self.cfg.commands.body_height_cmd[1],
-            self.cfg.commands.gait_frequency_cmd_range[1],
-            self.cfg.commands.gait_phase_cmd_range[1], self.cfg.commands.gait_offset_cmd_range[1],
-            self.cfg.commands.gait_bound_cmd_range[1], self.cfg.commands.gait_duration_cmd_range[1],
-            self.cfg.commands.footswing_height_range[1], self.cfg.commands.body_pitch_range[1],
-            self.cfg.commands.body_roll_range[1],self.cfg.commands.ee_force_magnitude[1],
-            self.cfg.commands.ee_force_direction_angle[1], self.cfg.commands.ee_force_z[1], 
-            self.cfg.commands.ee_sphe_radius[1], self.cfg.commands.ee_sphe_pitch[1], 
-            self.cfg.commands.ee_sphe_yaw[1], self.cfg.commands.ee_timing[1],
-            self.cfg.commands.end_effector_roll[1], self.cfg.commands.end_effector_pitch[1], 
-            self.cfg.commands.end_effector_yaw[1], 1])
-        
-        for curriculum in self.curricula:
-            curriculum.set_to(low=low, high=high)
-
-        # assign the control mode to each environment (force or position)
-        # 0 = position, 1 = force
-        self.force_or_position_control = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
-        
-
-    def _resample_force_or_position_control(self, env_ids):
-        if self.cfg.commands.hybrid_mode == "mixed":
-            self.force_or_position_control[env_ids] = torch.rand(len(env_ids), device=self.device)
-        elif self.cfg.commands.hybrid_mode == "binary":
-            self.force_or_position_control[env_ids] = torch.randint(0, 2, (len(env_ids),), device=self.device).float()
-        elif self.cfg.commands.hybrid_mode == "force":
-            self.force_or_position_control[env_ids] = torch.ones(len(env_ids), device=self.device)
-        elif self.cfg.commands.hybrid_mode == "position":
-            self.force_or_position_control[env_ids] = torch.zeros(len(env_ids), device=self.device)
-        else:
-            print("Error: hybrid_mode not recognized")
-            exit(0)
-        self.commands[env_ids, INDEX_FORCE_OR_POSITION_INDICATOR] = self.force_or_position_control[env_ids]
-
     def _prepare_reward_function(self):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
             Looks for self._reward_<REWARD_NAME>, where <REWARD_NAME> are names of all non zero reward scales in the cfg.
         """
         # reward containers
-        from b1_gym.rewards.b1_loco_z1_gaitfree_rewards import B1LocoZ1GaitfreeRewards
-        reward_containers = {"B1LocoZ1GaitfreeRewards": B1LocoZ1GaitfreeRewards,}
-        
+        from b1_gym.rewards import make_reward_container
 
-        self.reward_container = reward_containers[self.cfg.rewards.reward_container_name](self)
+        self.reward_container = make_reward_container(
+            self.cfg.rewards.reward_container_name, self
+        )
 
         # remove zero scales + multiply non-zero ones by dt
         for key in list(self.reward_scales.keys()):
@@ -2784,12 +2117,12 @@ class LeggedRobot(BaseTask):
             self.initialize_cameras(range(self.num_envs))
 
         if self.cfg.perception.measure_heights:
-            from b1_gym.sensors.heightmap_sensor import HeightmapSensor
+            from b1_gym.sensors import HeightmapSensor
             self.heightmap_sensor = HeightmapSensor(self)
 
         # if recording video, set up camera
         if self.cfg.env.record_video:
-            from b1_gym.sensors.floating_camera_sensor import FloatingCameraSensor
+            from b1_gym.sensors import FloatingCameraSensor
             self.rendering_camera = FloatingCameraSensor(self)
             
 
@@ -3042,7 +2375,7 @@ class LeggedRobot(BaseTask):
         self.cams = {label: [] for label in self.cfg.perception.camera_names}
         self.camera_sensors = {}
 
-        from b1_gym.sensors.attached_camera_sensor import AttachedCameraSensor
+        from b1_gym.sensors import AttachedCameraSensor
 
         for camera_label, camera_pose, camera_rpy, camera_gimbal in zip(self.cfg.perception.camera_names,
                                                              self.cfg.perception.camera_poses,

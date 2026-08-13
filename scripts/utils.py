@@ -1,5 +1,8 @@
 import random
+import re
 import sys
+import tempfile
+from pathlib import Path
 from typing import Callable
 
 import isaacgym
@@ -10,6 +13,7 @@ sys.path.append('../')
 
 from b1_gym.envs.b1_z1.b1_z1 import B1Z1Env
 from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
+from b1_gym.commands import validate_control_mode
 from b1_gym.envs.wrappers.history_wrapper import HistoryWrapper
 from b1_gym.utils.artifacts import (
     load_run_config,
@@ -43,8 +47,16 @@ def load_local_policy(run_dir, checkpoint, env, device="cuda:0"):
         run_dir, checkpoint
     )
     local_config = load_run_config(run_dir)
+    policy = _policy_from_checkpoint(
+        checkpoint_path, local_config, env, device
+    )
+    print(f"Loaded checkpoint: {checkpoint_path}")
+    return policy, checkpoint_number
+
+
+def _policy_from_checkpoint(checkpoint_path, config, env, device):
     train_cfg = B1Z1CfgPPO()
-    apply_config(train_cfg.policy, local_config.get("AC_Args", {}))
+    apply_config(train_cfg.policy, config.get("AC_Args", {}))
     actor_critic = ActorCritic(
         env.num_obs,
         env.num_privileged_obs,
@@ -56,13 +68,56 @@ def load_local_policy(run_dir, checkpoint, env, device="cuda:0"):
     state_dict = loaded.get("model_state_dict", loaded)
     actor_critic.load_state_dict(state_dict)
     actor_critic.eval()
-    print(f"Loaded checkpoint: {checkpoint_path}")
-    return LocalPolicy(actor_critic, device), checkpoint_number
+    return LocalPolicy(actor_critic, device)
 
-def load_policy(run, run_path: str, weights_path: str) -> Callable:
+
+def _load_legacy_split_policy(run, weights_path):
+    """Load pre-refactor W&B exports without making them the active layout."""
+    def download_modules(download_root):
+        legacy_root = "tmp/legged_data/"
+        body_file = run.file(legacy_root + "body_latest.jit").download(
+            replace=True, root=str(download_root)
+        )
+        body = torch.jit.load(body_file.name)
+        adaptation_file = run.file(
+            legacy_root + "adaptation_module_latest.jit"
+        ).download(replace=True, root=str(download_root))
+        adaptation_module = torch.jit.load(adaptation_file.name)
+        return body, adaptation_module
+
+    if weights_path:
+        download_root = Path(weights_path).expanduser()
+        download_root.mkdir(parents=True, exist_ok=True)
+        body, adaptation_module = download_modules(download_root)
+    else:
+        with tempfile.TemporaryDirectory(
+            prefix="learning-compliance-wandb-legacy-"
+        ) as temp_dir:
+            body, adaptation_module = download_modules(temp_dir)
+
+    def policy(obs, info=None):
+        latent = adaptation_module(obs["obs_history"].to("cpu"))
+        action = body(torch.cat((obs["obs_history"].to("cpu"), latent), dim=-1))
+        if info is not None:
+            info["latent"] = latent
+        return action
+
+    return policy
+
+
+def load_policy(
+    run,
+    run_path: str,
+    weights_path: str,
+    env=None,
+    device="cuda:0",
+    checkpoint="latest",
+) -> Callable:
     '''
-    1. Loads the latest policy and adaptation module weights in the temporary directory /tmp/legged_data
-    2. Initialize these networks with these weights 
+    Load a canonical run-owned checkpoint from W&B and initialize its policy.
+
+    Historical split JIT artifacts remain readable when a run predates the
+    canonical ``checkpoints/model_*.pt`` layout.
 
     Arguments:
         - runpath:      path of the run in wandb (click on info for a run to retrieve it) 
@@ -71,23 +126,49 @@ def load_policy(run, run_path: str, weights_path: str) -> Callable:
     Returns: 
         - The function used to generate actions given the obs history
     '''
-    wandb_path = 'tmp/legged_data/'
-    # replace file locally if it already exists, root: A string specifying the root directory where the downloaded file should be stored. 
-    body_file = run.file(wandb_path + 'body_latest.jit').download(replace=True, root=weights_path) 
-    body = torch.jit.load(body_file.name)
+    if env is None:
+        return _load_legacy_split_policy(run, weights_path)
 
-    #adaptation_module_file = wandb.restore(weights_path + 'adaptation_module_latest.jit', run_path=run_path)
-    adaptation_module_file = run.file(wandb_path + 'adaptation_module_latest.jit').download(replace=True, root=weights_path) 
-    adaptation_module = torch.jit.load(adaptation_module_file.name)
+    remote_files = {remote_file.name: remote_file for remote_file in run.files()}
+    numbered = []
+    for name in remote_files:
+        match = re.fullmatch(r"checkpoints/model_(\d+)\.pt", name)
+        if match:
+            numbered.append((int(match.group(1)), name))
 
-    def policy(obs, info={}):
-        i = 0
-        latent = adaptation_module.forward(obs["obs_history"].to('cpu'))
-        action = body.forward(torch.cat((obs["obs_history"].to('cpu'), latent), dim=-1))
-        info['latent'] = latent
-        return action
+    if str(checkpoint).lower() == "latest":
+        checkpoint_name = max(numbered)[1] if numbered else None
+        if checkpoint_name is None and "checkpoints/model_latest.pt" in remote_files:
+            checkpoint_name = "checkpoints/model_latest.pt"
+    else:
+        checkpoint_number = int(checkpoint)
+        candidates = (
+            f"checkpoints/model_{checkpoint_number:06d}.pt",
+            f"checkpoints/model_{checkpoint_number}.pt",
+        )
+        checkpoint_name = next(
+            (name for name in candidates if name in remote_files), None
+        )
 
-    return policy
+    if checkpoint_name is None:
+        return _load_legacy_split_policy(run, weights_path)
+
+    def download_and_load(download_root):
+        downloaded = remote_files[checkpoint_name].download(
+            replace=True, root=str(download_root)
+        )
+        policy = _policy_from_checkpoint(
+            downloaded.name, dict(run.config), env, device
+        )
+        print(f"Loaded W&B checkpoint: {run_path}/{checkpoint_name}")
+        return policy
+
+    if weights_path:
+        download_root = Path(weights_path).expanduser()
+        download_root.mkdir(parents=True, exist_ok=True)
+        return download_and_load(download_root)
+    with tempfile.TemporaryDirectory(prefix="learning-compliance-wandb-") as temp_dir:
+        return download_and_load(temp_dir)
 
 def load_env(run_path: str = None, weights_path: str = None, sim_device: str = 'cuda:0',
              num_envs: int = 1, headless: bool = False, fix_base: bool = False,
@@ -114,12 +195,8 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     
     if run_path is not None and local_run_dir is not None:
         raise ValueError("Choose either a W&B run_path or a local_run_dir, not both")
-    valid_control_modes = {"position", "force", "binary", "mixed"}
-    if control_mode is not None and control_mode not in valid_control_modes:
-        available = ", ".join(sorted(valid_control_modes))
-        raise ValueError(
-            f"Unknown control mode {control_mode!r}; choose one of: {available}"
-        )
+    if control_mode is not None:
+        validate_control_mode(control_mode)
     if force_amplitude is not None and force_amplitude < 0:
         raise ValueError("force_amplitude must be non-negative")
 
@@ -273,7 +350,10 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
         # Load policy
         policy = load_policy(run, 
                              run_path=run_path,
-                             weights_path=weights_path)
+                             weights_path=weights_path,
+                             env=env,
+                             device=sim_device,
+                             checkpoint=checkpoint)
     else:
         # set the dummy policy
         policy = lambda x: torch.zeros((num_envs, 19), device=sim_device)

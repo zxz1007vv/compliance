@@ -1,12 +1,5 @@
-class Sensor:
-    def __init__(self, env):
-        self.env = env
+"""Compatibility import for the consolidated sensor implementation."""
 
-    def get_observation(self):
-        raise NotImplementedError
+from .sensors import Sensor
 
-    def get_noise_vec(self):
-        raise NotImplementedError
-    
-    def get_dim(self):
-        raise NotImplementedError
+__all__ = ["Sensor"]

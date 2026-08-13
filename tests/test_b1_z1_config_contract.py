@@ -2,12 +2,12 @@ import unittest
 
 import isaacgym
 
-from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
-from b1_gym.utils.config_utils import config_fingerprint
+from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
+from wbc_compliance_gym.utils.config_utils import config_fingerprint
 
 
 EXPECTED_ENV_CONFIG_SHA256 = (
-    "5bbc3f75471ac679952e1b6029a0639fe35e0513957d5f85426665f08db751d7"
+    "e05f1682ed01fd52b847ebd14e4cf185de228ede91e9f42bbdf1ecdba53b5f4f"
 )
 EXPECTED_TRAIN_CONFIG_SHA256 = (
     "3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b"

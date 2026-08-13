@@ -2,9 +2,9 @@ import unittest
 
 import isaacgym
 
-from b1_gym.envs.base.legged_robot_config import Cfg
-from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg
-from b1_gym.utils.config_utils import (
+from wbc_compliance_gym.envs.base.legged_robot_config import Cfg
+from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg
+from wbc_compliance_gym.utils.config_utils import (
     apply_config,
     clone_config,
     config_fingerprint,
@@ -77,6 +77,21 @@ class ConfigUtilsTests(unittest.TestCase):
 
         self.assertFalse(report["legacy_reward_scale_repaired"])
         self.assertEqual(saved, normalized)
+
+    def test_legacy_b1_asset_path_is_migrated(self):
+        source = B1Z1Cfg()
+        saved = config_to_dict(source)
+        saved["asset"]["file"] = saved["asset"]["file"].replace(
+            "/resources/robots/b1_z1/", "/resources/robots/b1/"
+        )
+
+        normalized, report = normalize_saved_env_config(source, saved)
+        restored = B1Z1Cfg()
+        apply_config(restored, normalized)
+
+        self.assertTrue(report["legacy_asset_path_migrated"])
+        self.assertIn("/resources/robots/b1_z1/", restored.asset.file)
+        self.assertEqual(config_fingerprint(source), config_fingerprint(restored))
 
 
 if __name__ == "__main__":

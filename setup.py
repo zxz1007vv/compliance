@@ -1,14 +1,13 @@
-from setuptools import find_packages
-from distutils.core import setup
+from setuptools import find_packages, setup
 
 setup(
-    name='b1_gym',
+    name='wbc-compliance',
     version='1.0.0',
     author='Tifanny Portela',
     license="BSD-3-Clause",
     packages=find_packages(),
     author_email='',
-    description='Toolkit for deployment of sim-to-real RL on the Unitree B1+Z1.',
+    description='Whole-body compliance environments and reinforcement-learning tools.',
     install_requires=['jaynes==0.9.2',
                       'params-proto==2.10.9',
                       'gym',

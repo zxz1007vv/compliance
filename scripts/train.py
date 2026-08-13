@@ -6,15 +6,20 @@ from types import SimpleNamespace
 
 import isaacgym  # Isaac Gym must be imported before torch.
 
-from b1_gym.envs import register_tasks
-from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg
-from b1_gym.utils.helpers import get_args
-from b1_gym.utils.task_registry import task_registry
+from wbc_compliance_gym.envs import register_tasks
+from wbc_compliance_gym.utils.artifacts import (
+    load_run_config,
+    resolve_latest_run,
+    resolve_run_task,
+)
+from wbc_compliance_gym.utils.helpers import get_args
+from wbc_compliance_gym.utils.task_registry import task_registry
 
 
-def configure_env():
-    """Compatibility entry point returning the isolated B1+Z1 task config."""
-    return B1Z1Cfg()
+def configure_env(task_name):
+    """Return a fresh environment config for a registered task."""
+    register_tasks()
+    return task_registry.get_spec(task_name).env_cfg_factory()
 
 
 def train(args):
@@ -22,7 +27,25 @@ def train(args):
     if getattr(args, "logger", None):
         os.environ["COMPLIANCE_LOGGER"] = args.logger
 
-    register_tasks()
+    registry = register_tasks()
+    if getattr(args, "list_tasks", False):
+        print("\n".join(registry.names()))
+        return None
+    registry.get_spec(args.task)
+
+    resume_run_dir = getattr(args, "resume_run_dir", None)
+    if getattr(args, "resume", False) and not resume_run_dir:
+        resume_run_dir = str(resolve_latest_run(task_name=args.task))
+        args.resume_run_dir = resume_run_dir
+        print(f"Automatically selected latest run to resume: {resume_run_dir}")
+    if resume_run_dir:
+        saved_config = load_run_config(resume_run_dir)
+        saved_task = resolve_run_task(resume_run_dir, saved_config)
+        if saved_task != args.task:
+            raise ValueError(
+                f"Requested task {args.task!r} does not match resume run task "
+                f"{saved_task!r}: {resume_run_dir}"
+            )
     env, _ = task_registry.make_env(args.task, args=args)
     runner, train_cfg = task_registry.make_alg_runner(env, args.task, args=args)
     try:
@@ -57,6 +80,8 @@ def train_b1_z1_IK(
         resume_run_dir=resume_run_dir,
         checkpoint=checkpoint,
         logger=deps.pop("logger", None),
+        resume=resume_run_dir is not None,
+        list_tasks=False,
         headless=headless,
     )
     if deps:

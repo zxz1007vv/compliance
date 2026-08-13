@@ -1,149 +1,183 @@
-# Code Release for Learning Force Control for Legged Manipulation
+# WBC Compliance Gym
 
+本仓库用于在 Isaac Gym 中训练和评估足式机器人全身柔顺控制策略。当前正式任务是
+Unitree B1 搭载 Z1 机械臂的 locomotion + position/force compliance 控制，代码来源于
+论文 [Learning Force Control for Legged Manipulation](https://arxiv.org/abs/2405.01402)，
+并参考了 legged_gym、rsl_rl 以及
+[HIMLoco-for-Go2W](https://github.com/TrackinBIT/HIMLoco-for-Go2W) 的 TaskRegistry 组织方式。
 
-# Table of contents
-1. [Overview](#overview)
-2. [System Requirements](#requirements)
-3. [Training a Model](#simulation)
-    1. [Installation](#installation)
-    2. [Environment and Model Configuration](#configuration)
-    3. [Training and Logging](#training)
-    4. [Analyzing the Policy](#analysis)
+## 1. 当前约定
 
-## Overview <a name="introduction"></a>
+- 当前注册任务：`b1_z1_ik`
+- 仿真与任务包：`wbc_compliance_gym`
+- 强化学习包：`wbc_compliance_rl`
+- 正式实验目录：`logs/<task>/<timestamp>_<run-name>/`
+- `train.py` 必须使用 `--task` 显式选择注册任务
+- `play.py` 必须提供 `--task` 或 `--run-dir`
+- play 指定 task 但不指定 run/checkpoint 时，自动使用该任务的最新 run 和最高编号 checkpoint
 
-This repository provides an implementation of the paper:
-
-
-<td style="padding:20px;width:75%;vertical-align:middle">
-      <a href="https://tif-twirl-13.github.io/learning-compliance.html" target="_blank">
-      <b> Learning Force Control for Legged Manipulation </b>
-      </a>
-      <br>
-      <a href="https://tif-twirl-13.github.io/Home.html" target="_blank">Tifanny Portela</a> and <a href="https://gmargo11.github.io/" target="_blank">Gabriel B. Margolis</a> and <a href="https://yandongji.github.io/" target="_blank">Yandong Ji</a> and <a href="https://people.csail.mit.edu/pulkitag" target="_blank">Pulkit Agrawal</a>
-      <br>
-      <em>International Conference on Robotics and Automation</em>, 2024
-      <br>
-      <a href="https://arxiv.org/abs/2405.01402">paper</a> /
-      <a href="https://tif-twirl-13.github.io/learning-compliance.html" target="_blank">project page</a>
-    <br>
-</td>
-
-<br>
-
-This environment builds on the [legged gym environment](https://leggedrobotics.github.io/legged_gym/) by Nikita
-Rudin, Robotic Systems Lab, ETH Zurich (Paper: https://arxiv.org/abs/2109.11978) and the Isaac Gym simulator from 
-NVIDIA (Paper: https://arxiv.org/abs/2108.10470). Training code builds on the 
-[rsl_rl](https://github.com/leggedrobotics/rsl_rl) repository, also by Nikita
-Rudin, Robotic Systems Lab, ETH Zurich. All redistributed code retains its
-original [license](LICENSES/legged_gym/LICENSE).
-
-Our initial release provides the following features:
-* Train a force control and locomotion policy for the Unitree B1 with Z1 arm.
-
-## System Requirements <a name="requirements"></a>
-
-**Simulated Training and Evaluation**: Isaac Gym requires an NVIDIA GPU. To train in the default configuration, we recommend a GPU with at least 10GB of VRAM. The code can run on a smaller GPU if you decrease the number of parallel environments (`Cfg.env.num_envs`). However, training will be slower with fewer environments.
-
-## Training a Model <a name="simulation"></a>
-
-### Installation <a name="installation"></a>
-
-#### Install pytorch 1.10 with cuda-11.3:
+所有命令均建议在仓库根目录执行：
 
 ```bash
-pip3 install torch==1.10.0+cu113 torchvision==0.11.1+cu113 torchaudio==0.10.0+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+cd /home/ubuntu/zskj/learning-compliance
+conda activate compliance
 ```
 
-#### Install Isaac Gym
+## 2. 安装与环境
 
-1. Download and install Isaac Gym Preview 4 from https://developer.nvidia.com/isaac-gym
-2. unzip the file via:
-    ```bash
-    tar -xf IsaacGym_Preview_4_Package.tar.gz
-    ```
+当前代码已在以下环境验证：
 
-3. now install the python package
-    ```bash
-    cd isaacgym/python && pip install -e .
-    ```
-4. Verify the installation by try running an example
+- Ubuntu Linux
+- Python 3.8
+- Isaac Gym Preview 4
+- PyTorch 1.13.1 + CUDA 11.7
+- NVIDIA GPU
 
-    ```bash
-    python examples/1080_balls_of_solitude.py
-    ```
-5. For troubleshooting check docs `isaacgym/docs/index.html`
-
-#### Install the `b1_gym` package
-
-In this repository, run `pip install -e .`
-
-### Verifying the Installation
-
-If everything is installed correctly, you should be able to run the test script with:
+先安装 Isaac Gym，再安装本项目的 editable package：
 
 ```bash
-python scripts/test.py
+cd /path/to/isaacgym/python
+python -m pip install -e .
+
+cd /home/ubuntu/zskj/learning-compliance
+python -m pip install -e . --no-deps
 ```
 
-You should see a GUI window with 10 B1+Z1 robots standing in place.
+运行基础验证：
 
-### Environment and Model Configuration <a name="configuration"></a>
+```bash
+python -m unittest discover -s tests -v
+```
 
+### 关于 Gym 警告
 
-**CODE STRUCTURE** The reusable simulator implementation remains in
-[legged_robot.py](b1_gym/envs/base/legged_robot.py). The B1+Z1 task and all of
-its environment/training overrides live together in
-[b1_z1_config.py](b1_gym/envs/b1_z1/b1_z1_config.py). `train.py` only parses
-arguments and composes the registered task:
+运行时可能看到：
 
 ```text
-train.py -> TaskRegistry -> B1Z1Env -> OnPolicyRunner -> PPO -> ActorCritic
+Gym has been unmaintained since 2022 ...
+Please upgrade to Gymnasium ...
 ```
 
-The RL framework is organized by responsibility under
-`b1_gym_learn/{runners,algorithms,modules,storage}`. The historical
-`b1_gym_learn.ppo_cse` imports remain available for compatibility.
+这是旧版 `gym` 打出的迁移提示，不是本次 play 失败的原因。Isaac Gym Preview 4 及当前
+wrapper 仍使用 `gym` API，因此不要仅为消除提示直接全局替换成 Gymnasium。Gymnasium
+迁移应作为单独兼容性任务验证。
 
-Environment-facing task boundaries are exposed through
-`b1_gym/{commands,rewards,sensors,curriculum}`. Historical reward and
-curriculum import paths remain exact compatibility aliases. The command module
-owns the shared 23-dimensional command-vector contract and command lifecycle;
-all 28 sensor implementations are consolidated in `sensors/sensors.py`, with
-the historical per-sensor modules retained as exact compatibility imports.
+## 3. 代码框架
 
-The completed V2 refactor, frozen numerical contracts, and GPU equivalence
-results are documented in
-[the final execution report](docs/refactor_v2_final_report.md).
+```text
+learning-compliance/
+├── scripts/
+│   ├── train.py                 # 训练入口
+│   ├── play.py                  # 本地 checkpoint 评估入口
+│   ├── export_policy.py         # 独立 TorchScript 导出
+│   └── test.py                  # 无训练权重的仿真检查
+├── wbc_compliance_gym/
+│   ├── envs/
+│   │   ├── base/                # 通用 Isaac Gym 环境与物理流程
+│   │   ├── wrappers/            # observation history 等 wrapper
+│   │   └── b1_z1_compliance/
+│   │       ├── b1_z1_config.py  # 当前任务全部 Environment/PPO 配置
+│   │       └── b1_z1_env.py     # 当前任务环境类型
+│   ├── robots/
+│   │   ├── configs/             # 机器人配置片段
+│   │   └── *.py                 # Isaac Gym robot asset loader
+│   ├── commands/                # 23 维 command schema、采样与生命周期
+│   ├── curriculum/              # curriculum 算法
+│   ├── rewards/b1_z1.py         # B1+Z1 reward 公式
+│   ├── sensors/                 # observation/privileged observation sensor
+│   ├── terrains/                # 地形实现
+│   └── utils/                   # TaskRegistry、config、artifact 等工具
+├── wbc_compliance_rl/
+│   ├── algorithms/              # PPO
+│   ├── modules/                 # ActorCritic、adaptation module
+│   ├── runners/                 # rollout、更新、保存与自动导出
+│   ├── storage/                 # rollout storage
+│   └── logging/                 # TensorBoard/W&B logger
+├── resources/robots/b1_z1/      # B1、Z1 和 B1+Z1 URDF/mesh/xacro
+└── logs/                        # 正式训练与评估产物
+```
 
-The main scripts in [scripts](scripts/) are:
+训练链路：
+
+```text
+train.py --task
+  -> TaskRegistry
+  -> task env config + train config
+  -> task env + wrappers
+  -> OnPolicyRunner
+  -> PPO
+  -> ActorCritic / AdaptationModule
+```
+
+play 链路：
+
+```text
+play.py --task/--run-dir
+  -> 解析 task、latest run、latest checkpoint
+  -> TaskRegistry
+  -> 加载该 run 的 config.json
+  -> task play_cfg_hook
+  -> task env + wrappers
+  -> 加载 ActorCritic state_dict
+  -> rollout + evaluation JSON
+```
+
+## 4. 配置在哪里修改
+
+日常训练参数的唯一主要入口是：
+
+```text
+wbc_compliance_gym/envs/b1_z1_compliance/b1_z1_config.py
+```
+
+配置与实现的边界如下：
+
+| 修改目标 | 修改位置 |
+|---|---|
+| 环境数量、episode、terrain、control、domain randomization | `b1_z1_config.py` |
+| command 范围、重采样、hybrid mode、课程开关/阈值 | `b1_z1_config.py` |
+| reward 权重、tracking sigma、目标值 | `b1_z1_config.py` |
+| PPO、ActorCritic、runner、保存间隔 | `B1Z1CfgPPO` |
+| command 采样/更新算法或新增 command 维度 | `commands/commands.py` |
+| curriculum 更新算法 | `curriculum/curriculum.py` |
+| reward 数学公式或新增 reward | `rewards/b1_z1.py` |
+| observation sensor 实现 | `sensors/sensors.py` |
+
+不要手动修改 `logs/.../config.json`。它是某一次训练解析完成后的完整只读配置快照，
+用于复现、resume 和 play 历史 checkpoint。
+
+## 5. TaskRegistry 与任务名称
+
+查看当前注册任务：
 
 ```bash
-scripts
-├── __init__.py
-├── export_policy.py
-├── play.py
-├── test.py
-└── train.py
+python scripts/train.py --list-tasks
+# 或
+python scripts/play.py --list-tasks
 ```
 
-You can run the `test.py` script to verify your environment setup. If it runs then you have installed the gym
-environments correctly. To train an agent, run `train.py`. To evaluate a trained agent, run `play.py`. 
+当前输出：
 
+```text
+b1_z1_ik
+```
 
-### Training and Logging <a name="training"></a>
+任务名称统一使用 `b1_z1_ik`，不是 `z1_b1_ik`。未知任务会直接报错并列出可用任务。
 
-To train the compliant whole-body controller for B1+Z1, run: 
+## 6. 训练命令
+
+### 6.1 启动训练
 
 ```bash
 python scripts/train.py --task b1_z1_ik
 ```
 
-The script prints `Saved checkpoint 0` after the first update. TensorBoard is
-the default logger. W&B is optional and can be enabled with `--logger wandb`
-or `--logger both` after installing `pip install -e '.[wandb]'`.
+`--task` 是必填参数，避免多机器人环境下误用默认任务。直接运行
+`python scripts/train.py` 会返回参数错误。
 
-Common experiment overrides are available on the command line:
+训练默认 headless，使用 `b1_z1_config.py` 中的环境数量、训练轮数和保存间隔。
+
+### 6.2 常用覆盖参数
 
 ```bash
 python scripts/train.py \
@@ -151,70 +185,111 @@ python scripts/train.py \
   --num-envs 4000 \
   --max-iterations 100000 \
   --save-interval 400 \
-  --run-name force_tracking
+  --run-name force_tracking \
+  --logger tensorboard
 ```
 
-Each run owns all of its artifacts:
+打开 viewer：
 
-```text
-logs/b1_z1_ik/<date>_<run-name>/
-├── config.json
-├── tensorboard/
-├── checkpoints/
-│   ├── model_000400.pt
-│   └── model_latest.pt
-└── exported/
-    └── policies/
-        ├── policy_000400.pt
-        └── policy_latest.pt
+```bash
+python scripts/train.py --task b1_z1_ik --viewer
 ```
 
-Checkpoints contain policy and optimizer states, iteration/runner statistics,
-the full task configuration, and RNG states. Historical checkpoints stored in
-the run root or an older `checkpoints/` directory remain loadable. Resume with:
+### 6.3 从该任务最新 run 续训
 
 ```bash
 python scripts/train.py \
-  --resume-run-dir logs/b1_z1_ik/<run-directory> \
+  --task b1_z1_ik \
+  --resume \
   --checkpoint latest
 ```
 
-The GUI is off during training by default. Pass `--viewer` to enable it.
-Each checkpoint save also exports a self-contained TorchScript inference policy;
-checkpoint and deployment artifacts remain separate.
+`--resume` 未指定目录时，会自动选取 `logs/b1_z1_ik/` 下最新的有效 run。
 
-Training with the default configuration requires about 12GB of GPU memory. If you have less memory available, you can 
-still train by reducing the number of parallel environments used in simulation (the default is `Cfg.env.num_envs = 4000`).
+### 6.4 从指定 run/checkpoint 续训
 
-### Analyzing the Policy <a name="analysis"></a>
+```bash
+python scripts/train.py \
+  --task b1_z1_ik \
+  --resume-run-dir logs/b1_z1_ik/2026-08-13_11-32-29_wbc_release \
+  --checkpoint 4800
+```
 
-Run a saved checkpoint by passing its local run directory and iteration:
+`--resume-run-dir` 隐含 resume。程序会验证 run 中记录的任务是否与 `--task` 一致。
+
+## 7. Play 与评估命令
+
+### 7.1 指定任务的最新模型
+
+```bash
+python scripts/play.py --task b1_z1_ik --checkpoint latest
+```
+
+`play.py` 不设置默认任务。直接运行 `python scripts/play.py` 会提示必须提供
+`--task` 或 `--run-dir`。
+
+行为是：
+
+1. 选择 `logs/b1_z1_ik/` 下最新的有效 run；
+2. 选择该 run 中最高编号的 `model_*.pt`；
+3. 默认打开 Isaac Gym viewer；
+4. 默认运行 2000 steps；
+5. 将统计结果写入该 run 的 `evaluations/`。
+
+### 7.2 指定 run，自动推断 task
 
 ```bash
 python scripts/play.py \
-  --run-dir logs/b1_z1_ik/<run-directory> \
-  --checkpoint 5000 \
+  --run-dir logs/b1_z1_ik/2026-08-13_11-32-29_wbc_release \
+  --checkpoint latest
+```
+
+显式 `--run-dir` 时可以省略 `--task`，程序会从该 run 的 `config.json` 读取任务名。
+
+### 7.3 同时指定 task 和 run
+
+```bash
+python scripts/play.py \
+  --task b1_z1_ik \
+  --run-dir logs/b1_z1_ik/2026-08-13_11-32-29_wbc_release \
+  --checkpoint 4800
+```
+
+如果 task 与 run 不匹配，程序会拒绝加载，避免错误组合模型和环境。
+
+### 7.4 单独评估 position/force mode
+
+Position：
+
+```bash
+python scripts/play.py \
+  --task b1_z1_ik \
   --control-mode position \
   --seed 1
 ```
 
-Running `python scripts/play.py` without arguments automatically selects the
-most recently saved run for `b1_z1_ik`, loads its highest numbered checkpoint,
-and opens the Isaac Gym viewer. Pass `--headless` when no window is wanted.
-
-Use `--checkpoint latest` to select the highest numbered checkpoint. At play
-startup the policy is exported as one TorchScript file under
-`<run-directory>/exported/policies/`. Its filename combines the run name and
-checkpoint, for example `wbc_release_5000.pt`.
-
-`--control-mode` accepts only `position`, `force`, `binary`, or `mixed`.
-Headless evaluations can use multiple environments and automatically write a
-machine-readable JSON report under `<run-directory>/evaluations/`:
+Force：
 
 ```bash
 python scripts/play.py \
-  --run-dir logs/b1_z1_ik/<run-directory> \
-  --checkpoint 5000 \
+  --task b1_z1_ik \
+  --control-mode force \
+  --force-amplitude 70 \
+  --seed 1
+```
+
+`--control-mode` 只接受：
+
+```text
+position | force | binary | mixed
+```
+
+### 7.5 Headless 批量评估
+
+```bash
+python scripts/play.py \
+  --task b1_z1_ik \
+  --checkpoint latest \
   --control-mode force \
   --force-amplitude 70 \
   --seed 1 \
@@ -224,14 +299,124 @@ python scripts/play.py \
   --print-every 0
 ```
 
-See [the first-round evaluation protocol](docs/round1_closure_evaluation_protocol.md)
-for the three-seed position/force matrix, acceptance thresholds, and required
-comparison artifacts.
+也可以用 `--output /path/to/result.json` 指定评估 JSON 路径。
 
-Export without constructing an Isaac Gym environment:
+### 7.6 命令拼写规则
+
+正确：
+
+```bash
+python scripts/play.py --task=b1_z1_ik --checkpoint=latest
+```
+
+或者：
+
+```bash
+python scripts/play.py --task b1_z1_ik --checkpoint latest
+```
+
+错误示例：
+
+```bash
+--taks=z1_b1_ik       # task 拼错，任务名顺序也错
+-- checkpoint=latest  # “--” 和参数名之间不能有空格
+```
+
+## 8. 日志、checkpoint 与 policy
+
+每次训练创建独立目录：
+
+```text
+logs/<task>/<timestamp>_<run-name>/
+├── config.json
+├── tensorboard/
+├── checkpoints/
+│   ├── model_000000.pt
+│   ├── model_000400.pt
+│   └── model_latest.pt
+├── exported/
+│   └── policies/
+│       ├── policy_000000.pt
+│       ├── policy_000400.pt
+│       └── policy_latest.pt
+└── evaluations/
+```
+
+- `model_*.pt`：完整训练 checkpoint，包含网络、优化器、runner、配置和 RNG 状态；用于续训。
+- `policy_*.pt`：TorchScript 推理模型；用于部署或独立推理。
+- 每次 runner 保存 checkpoint 时会自动导出对应 policy 并刷新 `policy_latest.pt`。
+- `play.py` 只负责评估，不重复导出 policy。
+
+手动补导指定 checkpoint：
 
 ```bash
 python scripts/export_policy.py \
-  --run-dir logs/b1_z1_ik/<run-directory> \
-  --checkpoint latest
+  --run-dir logs/b1_z1_ik/2026-08-13_11-32-29_wbc_release \
+  --checkpoint 4800
 ```
+
+TensorBoard：
+
+```bash
+tensorboard --logdir logs
+```
+
+## 9. 机器人资源
+
+当前 B1、Z1 和组合模型统一位于：
+
+```text
+resources/robots/b1_z1/
+├── urdf/
+│   ├── b1.urdf
+│   ├── z1.urdf
+│   ├── b1_plus_z1.urdf
+│   ├── b1_plus_rigid_z1.urdf
+│   └── b1_plus_dismounted_z1.urdf
+├── meshes/
+│   └── z1/
+└── xacro/
+    └── z1/
+```
+
+旧 run 的 `config.json` 仍可能记录 `resources/robots/b1/...`。加载器会在内存中自动迁移到
+`resources/robots/b1_z1/...`，不会修改历史日志文件。
+
+## 10. 增加新机器人/任务
+
+例如增加 `b2_z2_compliance`：
+
+1. 将 URDF、mesh、xacro 放入 `resources/robots/b2_z2/`；
+2. 在 `wbc_compliance_gym/robots/` 增加 asset loader；
+3. 在 `wbc_compliance_gym/robots/configs/` 增加机器人配置片段；
+4. 新建任务目录：
+
+   ```text
+   wbc_compliance_gym/envs/b2_z2_compliance/
+   ├── __init__.py
+   ├── b2_z2_config.py
+   └── b2_z2_env.py
+   ```
+
+5. 如 reward 公式不同，在 `rewards/` 增加对应实现并注册 reward container；
+6. 在 `wbc_compliance_gym/envs/__init__.py::register_tasks()` 注册：
+   environment、environment config、training config、runner、wrappers 和 play config hook；
+7. 增加 observation/action/command 维度、配置指纹、资源加载和短训练测试；
+8. 运行：
+
+   ```bash
+   python scripts/train.py --task b2_z2_compliance
+   python scripts/play.py --task b2_z2_compliance
+   ```
+
+任务特有的 play 覆盖应放在该任务的 `*_config.py` 中，并通过 `play_cfg_hook` 注册；不要把
+新机器人的参数硬编码回 `scripts/play.py`。
+
+## 11. 验证与重构报告
+
+- [V2 最终执行报告](docs/refactor_v2_final_report.md)
+- [包命名空间迁移](docs/package_namespace_migration.md)
+- [第一轮评估协议](docs/round1_closure_evaluation_protocol.md)
+
+当前结构契约覆盖配置隔离、command schema、curriculum、reward registry、sensor catalog、
+ActorCritic state-dict、历史 checkpoint 加载和 TorchScript 推理一致性。

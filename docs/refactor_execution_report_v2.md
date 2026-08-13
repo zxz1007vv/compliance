@@ -21,9 +21,9 @@ whole-body compliance 算法、观测、奖励、命令、随机化和 PPO 更�
 
 1. 将 `ppo_cse` 按职责机械拆分为：
    `algorithms/`、`modules/`、`runners/`、`storage/`、`logging/`。
-2. 保留 `b1_gym_learn.ppo_cse.*` 兼容层，旧脚本和历史 checkpoint 无需改名。
+2. 将正式训练 API 收敛到 `wbc_compliance_rl` 的职责目录，不再保留重复实现或旧包转发层。
 3. 将 `scripts/train.py::configure_env()` 的任务配置迁移到
-   `b1_gym/envs/b1_z1/b1_z1_config.py`，形成隔离的 `B1Z1Cfg` 和
+   `wbc_compliance_gym/envs/b1_z1_compliance/b1_z1_config.py`，形成隔离的 `B1Z1Cfg` 和
    `B1Z1CfgPPO`。
 4. 新增 `TaskRegistry`，统一 task、环境、wrapper、配置和 Runner 的创建。
 5. 将训练入口缩减为参数解析、Registry 组装和 `runner.learn()`。
@@ -37,7 +37,7 @@ whole-body compliance 算法、观测、奖励、命令、随机化和 PPO 更�
 以下训练契约已固化为自动化测试：
 
 - 环境配置 SHA-256：
-  `5bbc3f75471ac679952e1b6029a0639fe35e0513957d5f85426665f08db751d7`
+  `e05f1682ed01fd52b847ebd14e4cf185de228ede91e9f42bbdf1ecdba53b5f4f`
 - 训练配置 SHA-256：
   `3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b`
 - ActorCritic state-dict 结构 SHA-256：
@@ -46,7 +46,7 @@ whole-body compliance 算法、观测、奖励、命令、随机化和 PPO 更�
 - 维度：observation `87`、privileged observation `16`、history `870`、
   action `19`、command `23`
 - adaptation labels / dimensions / weights 保持原值
-- 旧导入路径与新实现为同一 Python 对象
+- 正式导入路径均指向唯一实现
 - 历史 raw state-dict 和完整 checkpoint 均可 strict load
 - 显式 policy config 与旧全局 config 的初始化和前向输出逐张量一致
 - 导出 TorchScript 与 Python inference 输出一致

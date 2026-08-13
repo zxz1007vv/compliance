@@ -8,15 +8,16 @@ from unittest.mock import patch
 
 import isaacgym  # noqa: F401 - must precede torch imports in this project.
 
-from b1_gym.envs import register_tasks
-from b1_gym.utils.artifacts import (
+from wbc_compliance_gym.envs import register_tasks
+from wbc_compliance_gym.utils.artifacts import (
     load_run_config,
     resolve_latest_run,
     resolve_local_checkpoint,
+    resolve_run_task,
 )
-from b1_gym.utils.config_utils import ConfigNode
-from b1_gym.utils.task_registry import TaskRegistry
-from b1_gym_learn.logging.experiment_logger import ExperimentLogger
+from wbc_compliance_gym.utils.config_utils import ConfigNode
+from wbc_compliance_gym.utils.task_registry import TaskRegistry
+from wbc_compliance_rl.logging.experiment_logger import ExperimentLogger
 
 
 class DummyEnv:
@@ -90,12 +91,29 @@ class ArtifactsAndRegistryTests(unittest.TestCase):
 
             self.assertEqual(newer, resolve_latest_run(log_root, "b1_z1_ik"))
             self.assertEqual({"index": 2}, load_run_config(newer))
+            self.assertEqual("b1_z1_ik", resolve_run_task(newer))
+
+    def test_run_task_prefers_saved_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "folder_task" / "run"
+            run_dir.mkdir(parents=True)
+            config = {"RunCfg": {"task_name": "saved_task"}}
+            (run_dir / "config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            self.assertEqual("saved_task", resolve_run_task(run_dir))
 
     def test_registry_returns_isolated_configs_and_applies_cli_overrides(self):
         registry = TaskRegistry()
         registry.register(
-            "dummy", DummyEnv, env_cfg_factory, train_cfg_factory, DummyRunner
+            "dummy",
+            DummyEnv,
+            env_cfg_factory,
+            train_cfg_factory,
+            DummyRunner,
+            play_cfg_hook=lambda cfg, **kwargs: cfg,
         )
+        self.assertIsNotNone(registry.get_spec("dummy").play_cfg_hook)
         first_env_cfg, first_train_cfg = registry.get_cfgs("dummy")
         second_env_cfg, second_train_cfg = registry.get_cfgs("dummy")
         first_env_cfg.env.num_envs = 1

@@ -1,5 +1,4 @@
 import hashlib
-import importlib
 import json
 import unittest
 
@@ -7,7 +6,7 @@ import isaacgym  # noqa: F401 - must precede torch imports in this project.
 import numpy as np
 import torch
 
-from b1_gym.commands import (
+from wbc_compliance_gym.commands import (
     COMMAND_SCHEMA,
     COMMAND_DIMENSION,
     CommandLifecycleMixin,
@@ -37,18 +36,10 @@ from b1_gym.commands import (
     build_command_curricula,
     sample_control_modes,
 )
-from b1_gym.curriculum import RewardThresholdCurriculum
-from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg
-from b1_gym.envs.base.legged_robot import LeggedRobot
-from b1_gym.envs.base.curriculum import (
-    RewardThresholdCurriculum as LegacyRewardThresholdCurriculum,
-)
-from b1_gym.rewards import B1LocoZ1GaitfreeRewards, B1Z1Rewards, REWARD_CONTAINERS
-from b1_gym.rewards.b1_loco_z1_gaitfree_rewards import (
-    B1LocoZ1GaitfreeRewards as LegacyB1Z1Rewards,
-)
-from b1_gym.sensors import SENSOR_TYPES, make_sensor
-from b1_gym.sensors.orientation_sensor import OrientationSensor
+from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg
+from wbc_compliance_gym.envs.base.legged_robot import LeggedRobot
+from wbc_compliance_gym.rewards import B1LocoZ1GaitfreeRewards, B1Z1Rewards, REWARD_CONTAINERS
+from wbc_compliance_gym.sensors import OrientationSensor, SENSOR_TYPES, make_sensor
 
 
 class EnvironmentStructureContracts(unittest.TestCase):
@@ -149,12 +140,10 @@ class EnvironmentStructureContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             sample_control_modes("postion", 1, "cpu")
 
-    def test_reward_and_curriculum_legacy_imports_are_exact_aliases(self):
+    def test_reward_registry_preserves_saved_config_names(self):
         self.assertIs(B1Z1Rewards, B1LocoZ1GaitfreeRewards)
-        self.assertIs(B1Z1Rewards, LegacyB1Z1Rewards)
         self.assertIs(B1Z1Rewards, REWARD_CONTAINERS["B1Z1Rewards"])
         self.assertIs(B1Z1Rewards, REWARD_CONTAINERS["B1LocoZ1GaitfreeRewards"])
-        self.assertIs(RewardThresholdCurriculum, LegacyRewardThresholdCurriculum)
 
     def test_sensor_catalog_keeps_existing_types(self):
         self.assertIs(OrientationSensor, SENSOR_TYPES["OrientationSensor"])
@@ -186,41 +175,7 @@ class EnvironmentStructureContracts(unittest.TestCase):
             self.assertIn(physics_method, LeggedRobot.__dict__)
             self.assertNotIn(physics_method, CommandLifecycleMixin.__dict__)
 
-    def test_legacy_sensor_modules_are_exact_aliases(self):
-        legacy_modules = {
-            "ActionSensor": "action_sensor",
-            "AttachedCameraSensor": "attached_camera_sensor",
-            "BodyVelocitySensor": "body_velocity_sensor",
-            "ClockSensor": "clock_sensor",
-            "EeBaseForceSensor": "ee_base_force_sensor",
-            "EeGripperForceDirSensor": "ee_gripper_force_dir_sensor",
-            "EeGripperForceMagnSensor": "ee_gripper_force_magn_sensor",
-            "EeGripperForceSensor": "ee_gripper_force_sensor",
-            "EeGripperPositionSensor": "ee_gripper_position_sensor",
-            "EeGripperTargetPositionSensor": "ee_gripper_target_position_sensor",
-            "EgomotionSensor": "egomotion_sensor",
-            "FloatingCameraSensor": "floating_camera_sensor",
-            "FrictionSensor": "friction_sensor",
-            "GroundFrictionSensor": "ground_friction_sensor",
-            "GroundRoughnessSensor": "ground_roughness_sensor",
-            "HeightmapSensor": "heightmap_sensor",
-            "JointDynamicsSensor": "joint_dynamics_sensor",
-            "JointPositionSensor": "joint_position_sensor",
-            "JointPositionTargetSensor": "joint_position_target_sensor",
-            "JointVelocitySensor": "joint_velocity_sensor",
-            "LastActionSensor": "last_action_sensor",
-            "ObjectSensor": "object_sensor",
-            "ObjectVelocitySensor": "object_velocity_sensor",
-            "OrientationSensor": "orientation_sensor",
-            "RCSensor": "rc_sensor",
-            "RestitutionSensor": "restitution_sensor",
-            "TimingSensor": "timing_sensor",
-            "YawSensor": "yaw_sensor",
-        }
-        for class_name, module_name in legacy_modules.items():
-            module = importlib.import_module(f"b1_gym.sensors.{module_name}")
-            self.assertIs(getattr(module, class_name), SENSOR_TYPES[class_name])
-
+    def test_sensor_factory_rejects_unknown_type(self):
         with self.assertRaises(ValueError):
             make_sensor("UnknownSensor", object())
 

@@ -8,11 +8,10 @@ from types import SimpleNamespace
 
 import torch
 
-from b1_gym_learn.algorithms.ppo_cse import PPO, PPO_Args
-from b1_gym_learn.modules.actor_critic import AC_Args, ActorCritic
-from b1_gym_learn.runners.on_policy_runner import OnPolicyRunner
-from b1_gym_learn.storage.rollout_storage import RolloutStorage
-from b1_gym_learn.utils.policy_export import export_policy_as_jit
+from wbc_compliance_rl.algorithms.ppo_cse import PPO, PPO_Args
+from wbc_compliance_rl.modules.actor_critic import AC_Args, ActorCritic
+from wbc_compliance_rl.storage.rollout_storage import RolloutStorage
+from wbc_compliance_rl.utils.policy_export import export_policy_as_jit
 
 
 EXPECTED_MODEL_SPEC_SHA256 = (
@@ -43,19 +42,6 @@ class RLStructureContracts(unittest.TestCase):
     @staticmethod
     def make_model():
         return ActorCritic(87, 16, 870, 19)
-
-    def test_legacy_imports_are_exact_aliases(self):
-        from b1_gym_learn.ppo_cse import Runner
-        from b1_gym_learn.ppo_cse.actor_critic import ActorCritic as LegacyActorCritic
-        from b1_gym_learn.ppo_cse.ppo import PPO as LegacyPPO
-        from b1_gym_learn.ppo_cse.rollout_storage import (
-            RolloutStorage as LegacyRolloutStorage,
-        )
-
-        self.assertIs(Runner, OnPolicyRunner)
-        self.assertIs(LegacyActorCritic, ActorCritic)
-        self.assertIs(LegacyPPO, PPO)
-        self.assertIs(LegacyRolloutStorage, RolloutStorage)
 
     def test_model_state_dict_contract_is_unchanged(self):
         torch.manual_seed(1234)

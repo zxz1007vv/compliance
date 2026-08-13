@@ -16,26 +16,48 @@ from isaacgym.torch_utils import (
 )
 from tqdm import tqdm
 
-from b1_gym.commands import (
+from wbc_compliance_gym.commands import (
     INDEX_EE_FORCE_X,
     INDEX_EE_FORCE_Z,
     VALID_CONTROL_MODES,
 )
-from b1_gym_learn.ppo_cse.experiment_logger import safe_name
+from wbc_compliance_gym.envs import register_tasks
+from wbc_compliance_rl.logging.experiment_logger import safe_name
 from utils import (
-    export_policy_as_jit,
     load_env,
     load_run_config,
     resolve_local_checkpoint,
     resolve_latest_run,
+    resolve_run_task,
 )
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Play a locally trained compliance policy")
+    parser = argparse.ArgumentParser(
+        description="Play a registered whole-body compliance task",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+        epilog=(
+            "examples:\n"
+            "  python scripts/play.py --task b1_z1_ik\n"
+            "  python scripts/play.py --task b1_z1_ik --checkpoint latest\n"
+            "  python scripts/play.py --run-dir logs/b1_z1_ik/<run> "
+            "--checkpoint 5000"
+        ),
+    )
+    parser.add_argument(
+        "--task",
+        help=(
+            "Registered task; selects its latest run when --run-dir is omitted. "
+            "With only --run-dir, the task is read from config.json"
+        ),
+    )
+    parser.add_argument(
+        "--list-tasks", action="store_true", help="List registered tasks and exit"
+    )
     parser.add_argument(
         "--run-dir",
-        help="Training run directory; defaults to the most recently saved run",
+        help="Training run directory; when omitted, --task selects its latest run",
     )
     parser.add_argument("--checkpoint", default="latest", help="Checkpoint iteration or 'latest'")
     parser.add_argument("--device", default="cuda:0")
@@ -73,7 +95,10 @@ def parse_args():
     )
     parser.set_defaults(viewer=True)
     parser.add_argument("--record-video", action="store_true", help="Save an MP4 under the run directory")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.list_tasks and args.task is None and args.run_dir is None:
+        parser.error("one of --task or --run-dir is required")
+    return args
 
 
 class RolloutMetrics:
@@ -236,18 +261,30 @@ def print_rollout_metrics(metrics, step, steps, final=False):
     tqdm.write("\n".join(lines))
 
 
-def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
+def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
          viewer=True, record_video=False, print_every=100, control_mode=None,
          seed=1, force_amplitude=None, output=None):
     if num_envs < 1:
         raise ValueError("num_envs must be at least 1")
     if steps < 1:
         raise ValueError("steps must be at least 1")
+    registry = register_tasks()
     if run_dir is None:
-        run_dir = resolve_latest_run()
-        print(f"Automatically selected latest run: {run_dir}")
+        if task is None:
+            raise ValueError("task is required when run_dir is not provided")
+        registry.get_spec(task)
+        run_dir = resolve_latest_run(task_name=task)
+        print(f"Automatically selected latest run for task {task!r}: {run_dir}")
     run_dir, _, checkpoint_number = resolve_local_checkpoint(run_dir, checkpoint)
     run_config = load_run_config(run_dir)
+    saved_task = resolve_run_task(run_dir, run_config)
+    if task is not None and task != saved_task:
+        raise ValueError(
+            f"Requested task {task!r} does not match run task {saved_task!r}: "
+            f"{run_dir}"
+        )
+    task = task or saved_task
+    registry.get_spec(task)
     run_name = safe_name(
         run_config.get("RunCfg", {}).get("training_name", run_dir.name)
     )
@@ -262,25 +299,19 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
         control_mode=control_mode,
         seed=seed,
         force_amplitude=force_amplitude,
+        task_name=task,
     )
     effective_mode = env.cfg.commands.hybrid_mode
     print(
         f"Evaluation settings: mode={effective_mode}, seed={seed}, "
         f"num_envs={num_envs}, steps={steps}"
     )
-    export_path = export_policy_as_jit(
-        policy.actor_critic,
-        run_dir / "exported" / "policies",
-        filename=f"{policy_id}.pt",
-    )
-    print(f"Exported policy as jit script to: {export_path}")
-
     cameras = []
     video_writer = None
     video_path = None
     if record_video:
         import imageio
-        from b1_gym.sensors import FloatingCameraSensor
+        from wbc_compliance_gym.sensors import FloatingCameraSensor
 
         cameras = [FloatingCameraSensor(env, env_idx=i) for i in range(num_envs)]
         play_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -317,6 +348,7 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
         "generated_at": datetime.now().astimezone().isoformat(),
         "run_dir": str(run_dir.resolve()),
         "checkpoint": checkpoint_number,
+        "task": task,
         "policy_id": policy_id,
         "settings": {
             "control_mode": effective_mode,
@@ -354,20 +386,24 @@ def play(run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2
 
 if __name__ == "__main__":
     args = parse_args()
-    play(
-        run_dir=args.run_dir,
-        checkpoint=args.checkpoint,
-        device=args.device,
-        num_envs=args.num_envs,
-        steps=args.steps,
-        viewer=args.viewer,
-        record_video=args.record_video,
-        print_every=args.print_every,
-        control_mode=args.control_mode,
-        seed=args.seed,
-        force_amplitude=args.force_amplitude,
-        output=args.output,
-    )
+    if args.list_tasks:
+        print("\n".join(register_tasks().names()))
+    else:
+        play(
+            task=args.task,
+            run_dir=args.run_dir,
+            checkpoint=args.checkpoint,
+            device=args.device,
+            num_envs=args.num_envs,
+            steps=args.steps,
+            viewer=args.viewer,
+            record_video=args.record_video,
+            print_every=args.print_every,
+            control_mode=args.control_mode,
+            seed=args.seed,
+            force_amplitude=args.force_amplitude,
+            output=args.output,
+        )
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0)

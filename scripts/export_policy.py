@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import torch
 
-from b1_gym.utils.artifacts import load_run_config, resolve_local_checkpoint
-from b1_gym_learn.modules.actor_critic import AC_Args, ActorCritic
-from b1_gym_learn.utils.policy_export import export_policy_as_jit
+from wbc_compliance_gym.utils.artifacts import load_run_config, resolve_local_checkpoint
+from wbc_compliance_rl.modules.actor_critic import AC_Args, ActorCritic
+from wbc_compliance_rl.utils.policy_export import export_policy_as_jit
 
 
 def parse_args():

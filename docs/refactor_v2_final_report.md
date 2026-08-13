@@ -22,15 +22,18 @@ Environment 侧已经形成 `rewards`、`sensors`、`commands`、`curriculum` �
 ## 最终代码归属
 
 ```text
-b1_gym/
+wbc_compliance_gym/
 ├── commands/commands.py       # 23 维 schema、采样、EE 轨迹、gait/curriculum lifecycle
 ├── curriculum/curriculum.py   # curriculum 实现
-├── rewards/b1_z1_rewards.py   # B1+Z1 全部 reward
+├── rewards/b1_z1.py           # B1+Z1 全部 reward
 ├── sensors/sensors.py         # 全部 28 个 sensor 与 catalog
-├── envs/b1_z1/                # task 与 Environment/PPO config
+├── robots/configs/            # B1、Z1、Go1 与组合机器人配置片段
+├── envs/b1_z1_compliance/
+│   ├── b1_z1_config.py        # B1+Z1 Environment/PPO config
+│   └── b1_z1_env.py           # B1+Z1 task environment
 └── envs/base/legged_robot.py  # 仿真、reset、control、force、randomization 主体
 
-b1_gym_learn/
+wbc_compliance_rl/
 ├── runners/on_policy_runner.py
 ├── algorithms/ppo_cse.py
 ├── modules/{actor_critic,adaptation_module}.py
@@ -38,8 +41,8 @@ b1_gym_learn/
 └── logging/experiment_logger.py
 ```
 
-旧的 reward、sensor、curriculum 和 `b1_gym_learn.ppo_cse.*` 模块路径均保留为
-兼容导入，并指向新入口中的同一个类对象，不复制第二套实现。
+最终包名迁移后只保留上述正式入口；旧的 `b1_gym`、`b1_gym_learn` 和逐文件转发模块
+已删除。历史 checkpoint 保存的是 state-dict 和普通配置字典，不依赖旧 Python 类路径。
 
 ## 本次最终批次完成内容
 
@@ -57,10 +60,9 @@ b1_gym_learn/
 
 ### Sensor 收敛
 
-- 28 个 sensor 的实现统一到 `b1_gym/sensors/sensors.py`。
-- 原 29 个小模块变为兼容 wrapper；例如旧路径
-  `b1_gym.sensors.orientation_sensor.OrientationSensor` 与新 catalog 对象严格相同。
-- Environment、play 和 test 的正式依赖改为 `b1_gym.sensors` 公共入口。
+- 28 个 sensor 的实现统一到 `wbc_compliance_gym/sensors/sensors.py`。
+- 原 29 个逐 sensor 转发模块已删除，统一从 `wbc_compliance_gym.sensors` 导入。
+- Environment、play 和 test 的正式依赖改为 `wbc_compliance_gym.sensors` 公共入口。
 - sensor 名称、构造参数、observation 顺序、noise vector 和 privileged observation 顺序
   均未修改。
 
@@ -77,7 +79,7 @@ b1_gym_learn/
 ## 冻结契约
 
 - Environment config SHA-256：
-  `5bbc3f75471ac679952e1b6029a0639fe35e0513957d5f85426665f08db751d7`
+  `e05f1682ed01fd52b847ebd14e4cf185de228ede91e9f42bbdf1ecdba53b5f4f`
 - Training config SHA-256：
   `3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b`
 - Command curriculum grid + seed=100 首批 sample SHA-256：
@@ -91,9 +93,11 @@ b1_gym_learn/
 
 ### 自动化测试
 
-- `29/29` 项单元与结构契约测试通过。
+- 包名、资源路径与 task CLI 收敛后，`30/30` 项单元与结构契约测试通过。
 - 全部 Python 文件通过 `compileall`。
 - `git diff --check` 通过。
+- 历史 run `2026-08-13_11-32-29_wbc_release` 的最新 checkpoint 可 strict load、
+  独立导出，并完成 `1 environment × 2 steps` GPU headless play。
 
 ### 固定 seed GPU 回放
 

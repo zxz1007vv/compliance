@@ -11,19 +11,18 @@ import torch
 
 sys.path.append('../')
 
-from b1_gym.envs.b1_z1.b1_z1 import B1Z1Env
-from b1_gym.envs.b1_z1.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
-from b1_gym.commands import validate_control_mode
-from b1_gym.envs.wrappers.history_wrapper import HistoryWrapper
-from b1_gym.utils.artifacts import (
+from wbc_compliance_gym.commands import validate_control_mode
+from wbc_compliance_gym.envs import DEFAULT_TASK, register_tasks
+from wbc_compliance_gym.utils.artifacts import (
     load_run_config,
     resolve_latest_run,
     resolve_local_checkpoint,
     resolve_run_dir,
+    resolve_run_task,
 )
-from b1_gym.utils.config_utils import apply_config, normalize_saved_env_config
-from b1_gym_learn.modules.actor_critic import ActorCritic
-from b1_gym_learn.utils.policy_export import export_policy_as_jit
+from wbc_compliance_gym.utils.config_utils import apply_config, normalize_saved_env_config
+from wbc_compliance_gym.utils.task_registry import task_registry
+from wbc_compliance_rl.modules.actor_critic import ActorCritic
 
 
 class LocalPolicy:
@@ -42,20 +41,24 @@ class LocalPolicy:
         return actions
 
 
-def load_local_policy(run_dir, checkpoint, env, device="cuda:0"):
+def load_local_policy(
+    run_dir, checkpoint, env, train_cfg_factory, device="cuda:0"
+):
     run_dir, checkpoint_path, checkpoint_number = resolve_local_checkpoint(
         run_dir, checkpoint
     )
     local_config = load_run_config(run_dir)
     policy = _policy_from_checkpoint(
-        checkpoint_path, local_config, env, device
+        checkpoint_path, local_config, env, train_cfg_factory, device
     )
     print(f"Loaded checkpoint: {checkpoint_path}")
     return policy, checkpoint_number
 
 
-def _policy_from_checkpoint(checkpoint_path, config, env, device):
-    train_cfg = B1Z1CfgPPO()
+def _policy_from_checkpoint(
+    checkpoint_path, config, env, train_cfg_factory, device
+):
+    train_cfg = train_cfg_factory()
     apply_config(train_cfg.policy, config.get("AC_Args", {}))
     actor_critic = ActorCritic(
         env.num_obs,
@@ -112,6 +115,7 @@ def load_policy(
     env=None,
     device="cuda:0",
     checkpoint="latest",
+    train_cfg_factory=None,
 ) -> Callable:
     '''
     Load a canonical run-owned checkpoint from W&B and initialize its policy.
@@ -158,7 +162,11 @@ def load_policy(
             replace=True, root=str(download_root)
         )
         policy = _policy_from_checkpoint(
-            downloaded.name, dict(run.config), env, device
+            downloaded.name,
+            dict(run.config),
+            env,
+            train_cfg_factory,
+            device,
         )
         print(f"Loaded W&B checkpoint: {run_path}/{checkpoint_name}")
         return policy
@@ -176,7 +184,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
              sample_feasible_commands: bool = False, control_only_z1: bool = False,
              local_run_dir: str = None, checkpoint="latest",
              control_mode: str = None, seed: int = 1,
-             force_amplitude: float = None):
+             force_amplitude: float = None, task_name: str = DEFAULT_TASK):
     '''
     1. Load the parameters and weights of a wandb run
     2. Initialize the simulation parameters with these weights.
@@ -200,6 +208,9 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     if force_amplitude is not None and force_amplitude < 0:
         raise ValueError("force_amplitude must be non-negative")
 
+    register_tasks()
+    task_spec = task_registry.get_spec(task_name)
+
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -208,6 +219,9 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
             torch.cuda.manual_seed_all(seed)
 
     config_load_info = {
+        "legacy_asset_path_migrated": False,
+        "asset_path_before": None,
+        "asset_path_after": None,
         "legacy_reward_scale_repaired": False,
         "control_dt": None,
         "matching_scaled_coefficients": 0,
@@ -216,12 +230,18 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
 
     if local_run_dir is not None:
         local_run_dir = resolve_run_dir(local_run_dir)
-        cfg = B1Z1Cfg()
+        cfg = task_spec.env_cfg_factory()
         local_config = load_run_config(local_run_dir)
         normalized_cfg, config_load_info = normalize_saved_env_config(
             cfg, local_config["Cfg"]
         )
         apply_config(cfg, normalized_cfg)
+        if config_load_info["legacy_asset_path_migrated"]:
+            print(
+                "Migrated legacy robot asset path for this evaluation: "
+                f"{config_load_info['asset_path_before']} -> "
+                f"{config_load_info['asset_path_after']}"
+            )
         if config_load_info["legacy_reward_scale_repaired"]:
             print(
                 "Detected and repaired a legacy runtime-scaled reward config "
@@ -235,7 +255,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
         run = api.run(run_path)
 
         # Default config for all robots
-        cfg = B1Z1Cfg()
+        cfg = task_spec.env_cfg_factory()
 
         all_cfg = run.config
         normalized_cfg, config_load_info = normalize_saved_env_config(
@@ -245,7 +265,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
                     
     else:
         # play mode
-        cfg = B1Z1Cfg()
+        cfg = task_spec.env_cfg_factory()
 
 
     # # # Turn off DR for evaluation script
@@ -271,66 +291,30 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
 
     # Cfg.noise.noise_level = 0
 
-    # Define env params 
-    cfg.env.num_recording_envs = 1
-    cfg.env.num_envs = num_envs
-    cfg.env.episode_length_s = 10000
-    cfg.terrain.num_rows = 10
-    cfg.terrain.num_cols = 10
-    cfg.terrain.border_size = 0
-    cfg.terrain.num_border_boxes = 0
-    cfg.terrain.center_robots = True
-    cfg.terrain.center_span = 1
-    cfg.terrain.teleport_robots = False
-    cfg.terrain.mesh_type = "plane"  # boxes_tm; plane requires teleport_robots=False
-
-
-
-    if control_mode is not None:
-        cfg.commands.hybrid_mode = control_mode
-    if seed is not None:
-        cfg.commands.curriculum_seed = seed
-    if force_amplitude is not None:
-        force_range = [-float(force_amplitude), float(force_amplitude)]
-        cfg.domain_rand.max_push_force_xyz_gripper = force_range
-
-    cfg.commands.lin_vel_x = [0.0, 0.0]
-    cfg.commands.limit_vel_x = [0.0, 0.0]
-
-    cfg.commands.lin_vel_y = [0.0, 0.0]
-    cfg.commands.limit_vel_y = [0.0, 0.0]
-
-    cfg.commands.ang_vel_yaw = [0.0, 0.0]
-    cfg.commands.limit_vel_yaw = [0.0, 0.0]
-
-
-    #末端位置球坐标命令
-    cfg.commands.ee_sphe_radius = [0.55, 0.55]  #末端球坐标半径
-    cfg.commands.limit_ee_sphe_radius = [0.55, 0.55]
-    cfg.commands.ee_sphe_pitch = [0.0, 0.0]
-    cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
-    cfg.commands.ee_sphe_yaw = [0.0, 0.0]
-    cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
-
-
-    cfg.domain_rand.push_robots = False
-    cfg.domain_rand.randomize_tile_roughness = False
-
-
-    cfg.asset.fix_base_link = fix_base
-    cfg.commands.teleop_occulus = teleop
-    cfg.commands.interpolate_ee_cmds = interpolate_ee_cmds
-    cfg.commands.control_only_z1 = control_only_z1
-
-    cfg.env.recording_height_px = 720
-    cfg.env.recording_width_px = 1280
-    
-    cfg.env.record_video = True
-    cfg.env.send_eval_data = True
+    if task_spec.play_cfg_hook is not None:
+        task_spec.play_cfg_hook(
+            cfg,
+            num_envs=num_envs,
+            control_mode=control_mode,
+            seed=seed,
+            force_amplitude=force_amplitude,
+            fix_base=fix_base,
+            teleop=teleop,
+            interpolate_ee_cmds=interpolate_ee_cmds,
+            sample_feasible_commands=sample_feasible_commands,
+            control_only_z1=control_only_z1,
+        )
+    else:
+        cfg.env.num_envs = num_envs
 
     # Create env
-    env = B1Z1Env(sim_device=sim_device, headless=headless, cfg=cfg)
-    env = HistoryWrapper(env)
+    env = task_spec.env_class(
+        sim_device=sim_device,
+        headless=headless,
+        cfg=cfg,
+    )
+    for wrapper in task_spec.wrappers:
+        env = wrapper(env)
     env._config_load_info = config_load_info
     env._evaluation_settings = {
         "control_mode": cfg.commands.hybrid_mode,
@@ -344,6 +328,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
             local_run_dir,
             checkpoint=checkpoint,
             env=env,
+            train_cfg_factory=task_spec.train_cfg_factory,
             device=sim_device,
         )
     elif run_path is not None:
@@ -353,9 +338,12 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
                              weights_path=weights_path,
                              env=env,
                              device=sim_device,
-                             checkpoint=checkpoint)
+                             checkpoint=checkpoint,
+                             train_cfg_factory=task_spec.train_cfg_factory)
     else:
         # set the dummy policy
-        policy = lambda x: torch.zeros((num_envs, 19), device=sim_device)
+        policy = lambda x: torch.zeros(
+            (num_envs, env.num_actions), device=sim_device
+        )
 
     return env, policy

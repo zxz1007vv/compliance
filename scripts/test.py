@@ -51,7 +51,7 @@ def test(headless: bool = False):
                            headless = headless)
     
     # add floating cameras
-    from b1_gym.sensors import FloatingCameraSensor
+    from wbc_compliance_gym.sensors import FloatingCameraSensor
     cameras = []
     if RECORD_VIDEO:
         for i in range(NUM_ENVS):

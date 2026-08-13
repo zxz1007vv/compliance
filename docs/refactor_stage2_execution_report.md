@@ -9,6 +9,10 @@ Environment 边界整理；后续 command lifecycle 与 sensor 收敛已完成�
 本批只改变代码归属与创建入口，不改变 reward 函数体、command 向量布局、随机采样
 操作、sensor 实现、curriculum 算法、observation 顺序或控制器。
 
+注：本文记录第二阶段当时的渐进迁移状态。最终包名与唯一正式入口以
+[refactor_v2_final_report.md](refactor_v2_final_report.md) 为准；阶段性兼容转发模块已在
+最终目录收敛时删除。
+
 ## 第一轮正式复测验收
 
 正式统计采用 `32 environments × 2000 steps × 3 seeds`。目录中另有一份 position
@@ -43,7 +47,7 @@ torque limit、reward 或 controller，仅继续记录该现象。
 
 ### Command 边界
 
-新增 `b1_gym/commands/commands.py`：
+新增 `wbc_compliance_gym/commands/commands.py`：
 
 - 固化 23 维 command 向量的全部索引；
 - 统一合法 control modes；
@@ -58,7 +62,7 @@ torque limit、reward 或 controller，仅继续记录该现象。
 任务 reward 的正式实现入口改为：
 
 ```text
-b1_gym/rewards/b1_z1_rewards.py::B1Z1Rewards
+wbc_compliance_gym/rewards/b1_z1.py::B1Z1Rewards
 ```
 
 历史类名和模块路径继续可用，并且是同一个类对象：
@@ -73,10 +77,8 @@ B1LocoZ1GaitfreeRewards is B1Z1Rewards
 
 ### Sensor 与 Curriculum 边界
 
-- 新增 `b1_gym/sensors/sensors.py` 作为统一 sensor catalog 与创建入口；现有 sensor
-  实现文件和导入路径继续保留。
-- curriculum 正式入口迁移到 `b1_gym/curriculum/curriculum.py`；
-  `b1_gym.envs.base.curriculum` 变为精确兼容导入。
+- 新增 `wbc_compliance_gym/sensors/sensors.py` 作为统一 sensor catalog 与创建入口。
+- curriculum 正式入口迁移到 `wbc_compliance_gym/curriculum/curriculum.py`。
 
 这一步先统一依赖方向，没有为了减少文件数机械合并 28 个 sensor 类。
 
@@ -141,7 +143,7 @@ samples 精确相等。
 1. `_resample_commands()`、gait phase、heading 和 command-sum reset 已移入 command
    boundary，并维持原调用和 RNG 顺序。
 2. EE command 插值、测量和 position/force mode lifecycle 已一并迁移。
-3. 28 个 sensor 实现已收敛到单文件，旧模块均为精确兼容导入。
+3. 28 个 sensor 实现已收敛到单文件，并统一使用公共 catalog 入口。
 4. force push、controller、torque 与 physics step 继续留在 `LeggedRobot`。
 
 最终固定 seed、600-step 回放覆盖 command resampling，全部 JSON metric 与迁移前逐值

@@ -614,7 +614,7 @@ def configure_b1_z1_play(
     cfg.terrain.center_robots = True
     cfg.terrain.center_span = 1
     cfg.terrain.teleport_robots = False
-    cfg.terrain.mesh_type = "plane"
+    cfg.terrain.mesh_type = "plane"    #plane 需要 teleport_robots = False
 
     if control_mode is not None:
         cfg.commands.hybrid_mode = control_mode

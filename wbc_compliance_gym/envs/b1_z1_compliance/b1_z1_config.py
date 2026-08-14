@@ -15,7 +15,7 @@ from wbc_compliance_rl.algorithms.ppo_cse import PPO_Args
 from wbc_compliance_rl.modules.actor_critic import AC_Args
 from wbc_compliance_rl.runners.on_policy_runner import RunnerArgs
 
-
+#train config
 def configure_b1_z1_ik(cfg=None):
 
     cfg = clone_config(Cfg) if cfg is None else cfg
@@ -589,14 +589,14 @@ def configure_b1_z1_ik(cfg=None):
 
     return cfg
 
-
+#play config
 def configure_b1_z1_play(
     cfg,
     *,
     num_envs=1,
-    control_mode=None,
+    control_mode=None,   #"position", "force", "binary"
     seed=1,
-    force_amplitude=None,
+    force_amplitude=None,  #foce mode下 随机期望推力范围
     fix_base=False,
     teleop=False,
     interpolate_ee_cmds=True,

@@ -20,6 +20,7 @@ from wbc_compliance_gym.commands import (
     INDEX_EE_POS_YAW_CMD,
 )
 from wbc_compliance_gym.envs.base.base_task import BaseTask
+from wbc_compliance_gym.utils.cuda_debug import CudaPhysicsDebugger
 from wbc_compliance_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, get_scale_shift
 from wbc_compliance_gym.utils.terrain import Terrain, perlin
 from .legged_robot_config import Cfg
@@ -52,6 +53,9 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         self.terrain_props = terrain_props
         self.custom_heightmap = custom_heightmap
         self.first_sim_time_step = True
+        self._cuda_debugger = CudaPhysicsDebugger.from_environment(
+            sim_device, cfg.env.num_envs
+        )
         self._parse_cfg(self.cfg)
 
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
@@ -61,6 +65,9 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if not self.headless:
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
         self._init_buffers()
+
+        if self._cuda_debugger is not None:
+            self._cuda_debugger.log_startup(self.cfg)
 
         self._prepare_reward_function()
         self.init_done = True
@@ -85,6 +92,14 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        cuda_debugger = self._cuda_debugger
+        debug_step = int(getattr(self, "common_step_counter", 0))
+        if cuda_debugger is not None:
+            cuda_debugger.check_tensors(
+                "clipped_actions",
+                {"actions": self.actions},
+                debug_step,
+            )
         # step physics and render each frame
 
         self.pre_physics_step()
@@ -141,17 +156,91 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             # push robot base 
             self._push_robot_base(torch.arange(self.num_envs, device=self.device), self.cfg) 
 
+            if cuda_debugger is not None:
+                cuda_debugger.check_tensors(
+                    "before_simulate",
+                    {
+                        "actions": self.actions,
+                        "torques": self.torques,
+                        "joint_pos_target": getattr(self, "joint_pos_target", None),
+                        "forces": self.forces,
+                        "root_states": self.root_states,
+                        "dof_pos": self.dof_pos,
+                        "dof_vel": self.dof_vel,
+                    },
+                    debug_step,
+                    o,
+                )
+                cuda_debugger.report_dof_diagnostics(
+                    positions=self.dof_pos,
+                    velocities=self.dof_vel,
+                    requested_targets=getattr(
+                        self, "_cuda_debug_requested_joint_pos_target", None
+                    ),
+                    clamped_targets=self.joint_pos_target,
+                    hard_limits=self.dof_pos_hard_limits,
+                    velocity_limits=self.dof_vel_limits,
+                    dof_names=self.dof_names,
+                    step=debug_step,
+                    substep=o,
+                )
+                cuda_debugger.stage(
+                    "before_simulate", debug_step, o, synchronize=True
+                )
+
             self.gym.apply_rigid_body_force_tensors(self.sim, gymtorch.unwrap_tensor(self.forces), None, gymapi.GLOBAL_SPACE)
             self.gym.simulate(self.sim)
             # if self.device == 'cpu':
             self.gym.fetch_results(self.sim, True)
+            if cuda_debugger is not None:
+                cuda_debugger.stage(
+                    "after_fetch_results", debug_step, o, synchronize=True
+                )
             self.gym.refresh_dof_state_tensor(self.sim)
             self.gym.refresh_dof_force_tensor(self.sim)
             self.gym.refresh_actor_root_state_tensor(self.sim)
             self.gym.refresh_net_contact_force_tensor(self.sim)
             self.gym.refresh_rigid_body_state_tensor(self.sim)
 
-        self.post_physics_step()
+            if cuda_debugger is not None:
+                cuda_debugger.stage(
+                    "after_refresh_tensors", debug_step, o, synchronize=True
+                )
+                cuda_debugger.check_tensors(
+                    "after_refresh_tensors",
+                    {
+                        "root_states": self.root_states,
+                        "dof_pos": self.dof_pos,
+                        "dof_vel": self.dof_vel,
+                        "rigid_body_state": self.rigid_body_state,
+                        "contact_forces": self.contact_forces,
+                    },
+                    debug_step,
+                    o,
+                )
+                cuda_debugger.report_contact_diagnostics(
+                    self.contact_forces,
+                    self.body_names,
+                    debug_step,
+                    o,
+                )
+
+        if cuda_debugger is None:
+            self.post_physics_step()
+        else:
+            cuda_debugger.stage(
+                "before_post_physics_step", debug_step, synchronize=True
+            )
+            try:
+                self.post_physics_step()
+            except Exception as exc:
+                cuda_debugger.report_exception(
+                    "post_physics_step", debug_step, None, exc
+                )
+                raise
+            cuda_debugger.stage(
+                "after_post_physics_step", debug_step, synchronize=True
+            )
 
         # return clipped obs, clipped states (None), rewards, dones and infos
         clip_obs = self.cfg.normalization.clip_observations
@@ -160,6 +249,17 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         
         self.extras["int"] = (2100 - self.compute_energy()) * 0.0000003 #0.0001
+
+        if cuda_debugger is not None:
+            cuda_debugger.check_tensors(
+                "step_outputs",
+                {
+                    "observations": self.obs_buf,
+                    "privileged_observations": self.privileged_obs_buf,
+                    "rewards": self.rew_buf,
+                },
+                debug_step,
+            )
         
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
 
@@ -824,6 +924,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(self.num_dof, 2, dtype=torch.float, device=self.device,
                                               requires_grad=False)
+            self.dof_pos_hard_limits = torch.zeros_like(self.dof_pos_limits)
             self.dof_vel_limits = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
             self.torque_limits = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
             self.dof_damping = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
@@ -831,6 +932,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             for i in range(len(props)):
                 self.dof_pos_limits[i, 0] = props["lower"][i].item()
                 self.dof_pos_limits[i, 1] = props["upper"][i].item()
+                self.dof_pos_hard_limits[i] = self.dof_pos_limits[i]
                 self.dof_vel_limits[i] = props["velocity"][i].item()
                 self.torque_limits[i] = props["effort"][i].item()
                 self.dof_damping[i] = props["damping"][i].item()
@@ -862,15 +964,27 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                     raise Exception("Drive mode not found!")
                     
 
-                # soft limits for legs only
-                if i < 12 and i not in [2, 5]:
-                    m = (self.dof_pos_limits[i, 0] + self.dof_pos_limits[i, 1]) / 2
-                    r = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
-                    self.dof_pos_limits[i, 0] = m - 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
-                    self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
-                # Increase the minimum angle of the calf angle of the front legs
-                self.dof_pos_limits[2, 0] -= 0.25
-                self.dof_pos_limits[5, 0] -= 0.25
+            # Reward-only soft limits are derived after all hard URDF limits
+            # have been captured. The calf offset must be applied once, not
+            # once per DOF (which previously moved the bound close to -2*pi).
+            for i in range(min(12, self.num_dof)):
+                if i in (2, 5):
+                    continue
+                m = (self.dof_pos_limits[i, 0] + self.dof_pos_limits[i, 1]) / 2
+                r = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
+                self.dof_pos_limits[i, 0] = m - 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+                self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+            for calf_index in (2, 5):
+                if calf_index < self.num_dof:
+                    self.dof_pos_limits[calf_index, 0] -= 0.25
+
+            self.dof_has_position_limits = (
+                torch.isfinite(self.dof_pos_hard_limits).all(dim=1)
+                & (self.dof_pos_hard_limits[:, 1] > self.dof_pos_hard_limits[:, 0])
+            )
+            self.dof_limited_indices = self.dof_has_position_limits.nonzero(
+                as_tuple=False
+            ).flatten()
             
         # print("troque lim legs =: ", self.torque_limits[:12])
         # print("troque lim arm =: ", self.torque_limits[12:])
@@ -885,6 +999,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         self.dof_pos_limits = torch.zeros(
             self.num_dof, 2, dtype=torch.float, device=self.device
         )
+        self.dof_pos_hard_limits = torch.zeros_like(self.dof_pos_limits)
         self.dof_vel_limits = torch.zeros(
             self.num_dof, dtype=torch.float, device=self.device
         )
@@ -931,6 +1046,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         for i in range(len(props)):
             self.dof_pos_limits[i, 0] = props["lower"][i].item()
             self.dof_pos_limits[i, 1] = props["upper"][i].item()
+            self.dof_pos_hard_limits[i] = self.dof_pos_limits[i]
             self.dof_vel_limits[i] = props["velocity"][i].item()
             self.torque_limits[i] = props["effort"][i].item()
             self.dof_damping[i] = props["damping"][i].item()
@@ -968,6 +1084,13 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                 self.dof_pos_limits[i, 1] = (
                     midpoint + 0.5 * span * self.cfg.rewards.soft_dof_pos_limit
                 )
+        self.dof_has_position_limits = (
+            torch.isfinite(self.dof_pos_hard_limits).all(dim=1)
+            & (self.dof_pos_hard_limits[:, 1] > self.dof_pos_hard_limits[:, 0])
+        )
+        self.dof_limited_indices = self.dof_has_position_limits.nonzero(
+            as_tuple=False
+        ).flatten()
         return props
 
     def _randomize_rigid_body_props(self, env_ids, cfg):
@@ -1157,7 +1280,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if self.cfg.commands.sample_feasible_commands:
             self.joint_pos_target[:, :self.num_actuated_dof] = torch.tensor(self.target_joint_values, device=self.device)
 
-        
+        self._clamp_joint_pos_target_to_hard_limits()
 
         # actuator model
         dof_pos_error = (self.dof_pos - self.joint_pos_target)
@@ -1196,6 +1319,22 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         # self.torques = self.p_gains * (self.joint_pos_target - self.dof_pos) - self.d_gains * self.dof_vel #- self.dof_damping*self.dof_vel - self.dof_friction*torch.sign(self.dof_vel)
         
         
+
+    def _clamp_joint_pos_target_to_hard_limits(self):
+        """Keep position-drive targets inside finite URDF joint limits."""
+        limited = self.dof_limited_indices
+        if self._cuda_debugger is not None:
+            self._cuda_debug_requested_joint_pos_target = self.joint_pos_target.clone()
+        if limited.numel() == 0:
+            return
+
+        lower = self.dof_pos_hard_limits[limited, 0]
+        upper = self.dof_pos_hard_limits[limited, 1]
+        self.joint_pos_target[:, limited] = torch.maximum(
+            torch.minimum(self.joint_pos_target[:, limited], upper),
+            lower,
+        )
+
 
     def _reset_dofs(self, env_ids, cfg):
         """ Resets DOF position and velocities of selected environmments
@@ -2206,6 +2345,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
 
         # save body names from the asset
         body_names = self.gym.get_asset_rigid_body_names(self.robot_asset)
+        self.body_names = tuple(body_names)
         end_effector_name = getattr(self.cfg.asset, "end_effector_name", "link06")
         base_name = getattr(self.cfg.asset, "base_name", "base")
         try:

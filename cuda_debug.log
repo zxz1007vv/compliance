@@ -1,0 +1,639 @@
+Importing module 'gym_38' (/home/ubuntu/zskj/isaacgym/python/isaacgym/_bindings/linux-x86_64/gym_38.so)
+Setting GYM_USD_PLUG_INFO_PATH to /home/ubuntu/zskj/isaacgym/python/isaacgym/_bindings/linux-x86_64/usd/plugInfo.json
+PyTorch version 1.13.1
+Device count 1
+/home/ubuntu/zskj/isaacgym/python/isaacgym/_bindings/src/gymtorch
+Using /home/ubuntu/.cache/torch_extensions/py38_cu117 as PyTorch extensions root...
+Emitting ninja build file /home/ubuntu/.cache/torch_extensions/py38_cu117/gymtorch/build.ninja...
+Building extension module gymtorch...
+Allowing ninja to set a default number of workers... (overridable by setting the environment variable MAX_JOBS=N)
+ninja: no work to do.
+[Warning] [carb.gym.plugin] useGpuPipeline is set, forcing GPU PhysX
+Not connected to PVD
++++ Using GPU PhysX
+Physics Engine: PhysX
+Physics Device: cuda:0
+GPU Pipeline: enabled
+Loading extension module gymtorch...
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:71: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.height_samples = torch.tensor(self.terrain_cell_heights).view(self.env.cfg.terrain.num_rows,
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:258: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.friction_samples = torch.tensor(self.terrain_cell_frictions).view(self.env.cfg.terrain.num_rows,
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:261: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.roughness_samples = torch.tensor(self.terrain_cell_roughnesses).view(self.env.cfg.terrain.num_rows,
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:331: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.friction_samples = torch.tensor(self.terrain_cell_frictions).view(self.env.cfg.terrain.num_rows,
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:334: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.roughness_samples = torch.tensor(self.terrain_cell_roughnesses).view(self.env.cfg.terrain.num_rows,
+/home/ubuntu/zskj/learning-compliance/wbc_compliance_gym/terrains/tm_box_terrain.py:337: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  self.restitution_samples = torch.tensor(self.terrain_cell_restitutions).view(self.env.cfg.terrain.num_rows,
+[cuda-debug] enabled device=cuda:0 num_envs=512 dt=0.005 substeps=1 control_decimation=4 self_collisions=0 max_gpu_contact_pairs=8388608 default_buffer_size_multiplier=5 contact_collection=2 stats_interval=100 synchronize_cuda=True CUDA_LAUNCH_BLOCKING=1 gpu=NVIDIA GeForce RTX 4090 torch_cuda=11.7
+[cuda-debug] tensors stage=clipped_actions step=0 actions[min=0,max=0,abs=0] memory_mib[allocated=137.2,reserved=148.0]
+[cuda-debug] tensors stage=before_simulate step=0 substep=0 actions[min=-0.1,max=0,abs=0.1] torques[min=-60,max=60,abs=60] joint_pos_target[min=-1.8,max=1,abs=1.8] forces[min=-70,max=70,abs=70] root_states[min=-0.99999,max=68.489,abs=68.489] dof_pos[min=-2.2989,max=1.4998,abs=2.2989] dof_vel[min=0,max=0,abs=0] memory_mib[allocated=137.2,reserved=148.0]
+[cuda-debug] reached stage=before_simulate step=0 substep=0
+[cuda-debug] reached stage=after_fetch_results step=0 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=0 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=0 substep=0 root_states[min=-1.3139,max=68.49,abs=68.49] dof_pos[min=-2.2792,max=1.4918,abs=2.2792] dof_vel[min=-12.08,max=12.06,abs=12.08] rigid_body_state[min=-15.492,max=69.166,abs=69.166] contact_forces[min=-10359,max=1979.7,abs=10359] memory_mib[allocated=137.2,reserved=148.0]
+[cuda-debug] reached stage=before_post_physics_step step=0
+[cuda-debug] reached stage=after_post_physics_step step=0
+[cuda-debug] tensors stage=step_outputs step=0 observations[min=-2.435,max=2.4019,abs=2.435] privileged_observations[min=-98.989,max=98.928,abs=98.989] rewards[min=0.0070109,max=0.063525,abs=0.063525] memory_mib[allocated=137.4,reserved=148.0]
+Warning: reward _reward_dof_pos_limits has nonzero coefficient but was not found!
+Adaptation Module: Sequential(
+  (0): Linear(in_features=870, out_features=256, bias=True)
+  (1): ELU(alpha=1.0)
+  (2): Linear(in_features=256, out_features=128, bias=True)
+  (3): ELU(alpha=1.0)
+  (4): Linear(in_features=128, out_features=16, bias=True)
+)
+Actor MLP: Sequential(
+  (0): Linear(in_features=886, out_features=512, bias=True)
+  (1): ELU(alpha=1.0)
+  (2): Linear(in_features=512, out_features=256, bias=True)
+  (3): ELU(alpha=1.0)
+  (4): Linear(in_features=256, out_features=128, bias=True)
+  (5): ELU(alpha=1.0)
+  (6): Linear(in_features=128, out_features=19, bias=True)
+)
+Critic MLP: Sequential(
+  (0): Linear(in_features=886, out_features=512, bias=True)
+  (1): ELU(alpha=1.0)
+  (2): Linear(in_features=512, out_features=256, bias=True)
+  (3): ELU(alpha=1.0)
+  (4): Linear(in_features=256, out_features=128, bias=True)
+  (5): ELU(alpha=1.0)
+  (6): Linear(in_features=128, out_features=1, bias=True)
+)
+Run directory: /home/ubuntu/zskj/learning-compliance/logs/b1_z1_ik/2026-08-18_14-35-24_wbc_release
+TensorBoard directory: /home/ubuntu/zskj/learning-compliance/logs/b1_z1_ik/2026-08-18_14-35-24_wbc_release/tensorboard
+Experiment logger: tensorboard
+
+########################## Learning iteration 0/4999 ###########################
+                       Computation: 5576 steps/s
+                   Collection time: 4.005 s
+                     Learning time: 0.401 s
+               Value function loss: 0.0668
+                    Surrogate loss: 0.0083
+             Mean action noise std: 1.0008
+                       Mean reward: 0.16
+               Mean episode length: 26.88
+--------------------------------------------------------------------------------
+                   Total timesteps: 24576
+                    Iteration time: 4.41 s
+                        Total time: 4.41 s
+                               ETA: 6:07:08
+################################################################################
+Saved checkpoint 0: /home/ubuntu/zskj/learning-compliance/logs/b1_z1_ik/2026-08-18_14-35-24_wbc_release/checkpoints/model_000000.pt
+Exported policy 0: /home/ubuntu/zskj/learning-compliance/logs/b1_z1_ik/2026-08-18_14-35-24_wbc_release/exported/policies/policy_000000.pt
+
+########################## Learning iteration 1/4999 ###########################
+                       Computation: 5124 steps/s
+                   Collection time: 4.407 s
+                     Learning time: 0.389 s
+               Value function loss: 0.0177
+                    Surrogate loss: -0.0132
+             Mean action noise std: 1.0009
+                       Mean reward: 0.35
+               Mean episode length: 63.57
+--------------------------------------------------------------------------------
+                   Total timesteps: 49152
+                    Iteration time: 4.80 s
+                        Total time: 9.20 s
+                               ETA: 6:39:29
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=100 actions[min=-3.6604,max=3.7619,abs=3.7619] memory_mib[allocated=165.4,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=100 substep=0 actions[min=-3.6604,max=3.7619,abs=3.7619] torques[min=-139.29,max=209.97,abs=209.97] joint_pos_target[min=-3.5044,max=2.2196,abs=3.5044] forces[min=-70,max=70,abs=70] root_states[min=-3.936,max=68.904,abs=68.904] dof_pos[min=-2.3107,max=1.7671,abs=2.3107] dof_vel[min=-20.486,max=22.93,abs=22.93] memory_mib[allocated=165.4,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=100 substep=0
+[cuda-debug] reached stage=after_fetch_results step=100 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=100 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=100 substep=0 root_states[min=-3.7834,max=68.907,abs=68.907] dof_pos[min=-2.2911,max=1.7727,abs=2.2911] dof_vel[min=-19.48,max=21.892,abs=21.892] rigid_body_state[min=-23.485,max=69.642,abs=69.642] contact_forces[min=-1391.5,max=2046.5,abs=2046.5] memory_mib[allocated=165.4,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=100
+[cuda-debug] reached stage=after_post_physics_step step=100
+[cuda-debug] tensors stage=step_outputs step=100 observations[min=-3.6604,max=3.7619,abs=3.7619] privileged_observations[min=-88.893,max=95.441,abs=95.441] rewards[min=0,max=0.045574,abs=0.045574] memory_mib[allocated=165.6,reserved=400.0]
+
+########################## Learning iteration 2/4999 ###########################
+                       Computation: 5224 steps/s
+                   Collection time: 4.321 s
+                     Learning time: 0.383 s
+               Value function loss: 0.0123
+                    Surrogate loss: -0.0240
+             Mean action noise std: 1.0013
+                       Mean reward: 0.74
+               Mean episode length: 107.21
+--------------------------------------------------------------------------------
+                   Total timesteps: 73728
+                    Iteration time: 4.70 s
+                        Total time: 13.91 s
+                               ETA: 6:31:44
+################################################################################
+
+########################## Learning iteration 3/4999 ###########################
+                       Computation: 5121 steps/s
+                   Collection time: 4.414 s
+                     Learning time: 0.385 s
+               Value function loss: 0.0109
+                    Surrogate loss: -0.0186
+             Mean action noise std: 1.0010
+                       Mean reward: 1.11
+               Mean episode length: 136.16
+--------------------------------------------------------------------------------
+                   Total timesteps: 98304
+                    Iteration time: 4.80 s
+                        Total time: 18.71 s
+                               ETA: 6:39:35
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=200 actions[min=-4.3046,max=3.4764,abs=4.3046] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=200 substep=0 actions[min=-4.3046,max=3.4764,abs=4.3046] torques[min=-139.86,max=209.99,abs=209.99] joint_pos_target[min=-3.4479,max=2.7973,abs=3.4479] forces[min=-70,max=70,abs=70] root_states[min=-3.1063,max=68.635,abs=68.635] dof_pos[min=-2.2956,max=1.8185,abs=2.2956] dof_vel[min=-21.092,max=21.278,abs=21.278] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=200 substep=0
+[cuda-debug] reached stage=after_fetch_results step=200 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=200 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=200 substep=0 root_states[min=-3.5899,max=68.634,abs=68.634] dof_pos[min=-2.3455,max=1.8251,abs=2.3455] dof_vel[min=-20.103,max=20.193,abs=20.193] rigid_body_state[min=-22.181,max=69.245,abs=69.245] contact_forces[min=-355.94,max=1068.8,abs=1068.8] memory_mib[allocated=165.6,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=200
+[cuda-debug] reached stage=after_post_physics_step step=200
+[cuda-debug] tensors stage=step_outputs step=200 observations[min=-4.3046,max=3.4764,abs=4.3046] privileged_observations[min=-89.732,max=91.728,abs=91.728] rewards[min=0,max=0.048004,abs=0.048004] memory_mib[allocated=165.7,reserved=400.0]
+
+########################## Learning iteration 4/4999 ###########################
+                       Computation: 5178 steps/s
+                   Collection time: 4.347 s
+                     Learning time: 0.398 s
+               Value function loss: 0.0099
+                    Surrogate loss: -0.0253
+             Mean action noise std: 1.0007
+                       Mean reward: 1.05
+               Mean episode length: 154.87
+--------------------------------------------------------------------------------
+                   Total timesteps: 122880
+                    Iteration time: 4.75 s
+                        Total time: 23.45 s
+                               ETA: 6:35:04
+################################################################################
+
+########################## Learning iteration 5/4999 ###########################
+                       Computation: 4962 steps/s
+                   Collection time: 4.542 s
+                     Learning time: 0.410 s
+               Value function loss: 0.0115
+                    Surrogate loss: -0.0166
+             Mean action noise std: 1.0007
+                       Mean reward: 1.17
+               Mean episode length: 176.69
+--------------------------------------------------------------------------------
+                   Total timesteps: 147456
+                    Iteration time: 4.95 s
+                        Total time: 28.40 s
+                               ETA: 6:52:09
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=300 actions[min=-3.7088,max=3.8021,abs=3.8021] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=300 substep=0 actions[min=-3.7088,max=3.8021,abs=3.8021] torques[min=-139.21,max=209.95,abs=209.95] joint_pos_target[min=-3.2383,max=2.9469,abs=3.2383] forces[min=-70,max=70,abs=70] root_states[min=-2.8586,max=68.49,abs=68.49] dof_pos[min=-2.2681,max=1.8395,abs=2.2681] dof_vel[min=-22.125,max=23.791,abs=23.791] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=300 substep=0
+[cuda-debug] reached stage=after_fetch_results step=300 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=300 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=300 substep=0 root_states[min=-3.3742,max=68.49,abs=68.49] dof_pos[min=-2.2628,max=1.8345,abs=2.2628] dof_vel[min=-21.071,max=22.712,abs=22.712] rigid_body_state[min=-19.959,max=68.996,abs=68.996] contact_forces[min=-325.4,max=904.69,abs=904.69] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=300
+[cuda-debug] reached stage=after_post_physics_step step=300
+[cuda-debug] tensors stage=step_outputs step=300 observations[min=-3.7088,max=3.8021,abs=3.8021] privileged_observations[min=-79.089,max=94.23,abs=94.23] rewards[min=0,max=0.042853,abs=0.042853] memory_mib[allocated=165.7,reserved=400.0]
+
+########################## Learning iteration 6/4999 ###########################
+                       Computation: 5212 steps/s
+                   Collection time: 4.330 s
+                     Learning time: 0.385 s
+               Value function loss: 0.0113
+                    Surrogate loss: -0.0256
+             Mean action noise std: 0.9999
+                       Mean reward: 1.31
+               Mean episode length: 203.44
+--------------------------------------------------------------------------------
+                   Total timesteps: 172032
+                    Iteration time: 4.71 s
+                        Total time: 33.12 s
+                               ETA: 6:32:21
+################################################################################
+
+########################## Learning iteration 7/4999 ###########################
+                       Computation: 5043 steps/s
+                   Collection time: 4.468 s
+                     Learning time: 0.406 s
+               Value function loss: 0.0148
+                    Surrogate loss: -0.0170
+             Mean action noise std: 0.9994
+                       Mean reward: 1.33
+               Mean episode length: 227.58
+--------------------------------------------------------------------------------
+                   Total timesteps: 196608
+                    Iteration time: 4.87 s
+                        Total time: 37.99 s
+                               ETA: 6:45:26
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=400 actions[min=-4.1682,max=4.0286,abs=4.1682] memory_mib[allocated=165.7,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=400 substep=0 actions[min=-4.1682,max=3.7746,abs=4.1682] torques[min=-139.91,max=209.69,abs=209.69] joint_pos_target[min=-3.2763,max=2.4852,abs=3.2763] forces[min=-70,max=70,abs=70] root_states[min=-4.2668,max=68.701,abs=68.701] dof_pos[min=-2.4531,max=1.9212,abs=2.4531] dof_vel[min=-21.324,max=24.219,abs=24.219] memory_mib[allocated=165.7,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=400 substep=0
+[cuda-debug] reached stage=after_fetch_results step=400 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=400 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=400 substep=0 root_states[min=-4.1071,max=68.703,abs=68.703] dof_pos[min=-2.5097,max=1.9125,abs=2.5097] dof_vel[min=-20.291,max=23.093,abs=23.093] rigid_body_state[min=-19.987,max=69.367,abs=69.367] contact_forces[min=-3153.5,max=12953,abs=12953] memory_mib[allocated=165.7,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=400
+[cuda-debug] reached stage=after_post_physics_step step=400
+[cuda-debug] tensors stage=step_outputs step=400 observations[min=-4.1682,max=3.7746,abs=4.1682] privileged_observations[min=-96.734,max=89.275,abs=96.734] rewards[min=0,max=0.052791,abs=0.052791] memory_mib[allocated=165.9,reserved=400.0]
+
+########################## Learning iteration 8/4999 ###########################
+                       Computation: 5134 steps/s
+                   Collection time: 4.410 s
+                     Learning time: 0.376 s
+               Value function loss: 0.0139
+                    Surrogate loss: -0.0246
+             Mean action noise std: 0.9989
+                       Mean reward: 1.32
+               Mean episode length: 238.97
+--------------------------------------------------------------------------------
+                   Total timesteps: 221184
+                    Iteration time: 4.79 s
+                        Total time: 42.78 s
+                               ETA: 6:38:08
+################################################################################
+
+########################## Learning iteration 9/4999 ###########################
+                       Computation: 5141 steps/s
+                   Collection time: 4.385 s
+                     Learning time: 0.394 s
+               Value function loss: 0.0149
+                    Surrogate loss: -0.0175
+             Mean action noise std: 0.9991
+                       Mean reward: 1.81
+               Mean episode length: 259.86
+--------------------------------------------------------------------------------
+                   Total timesteps: 245760
+                    Iteration time: 4.78 s
+                        Total time: 47.56 s
+                               ETA: 6:37:29
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=500 actions[min=-5.122,max=3.923,abs=5.122] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=500 substep=0 actions[min=-5.122,max=3.923,abs=5.122] torques[min=-156.53,max=209.88,abs=209.88] joint_pos_target[min=-3.7499,max=2.5396,abs=3.7499] forces[min=-70,max=70,abs=70] root_states[min=-3.4745,max=69.105,abs=69.105] dof_pos[min=-2.1557,max=1.7842,abs=2.1557] dof_vel[min=-23.552,max=21.026,abs=23.552] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=500 substep=0
+[cuda-debug] reached stage=after_fetch_results step=500 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=500 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=500 substep=0 root_states[min=-3.7961,max=69.104,abs=69.104] dof_pos[min=-2.1831,max=1.788,abs=2.1831] dof_vel[min=-22.494,max=20.059,abs=22.494] rigid_body_state[min=-24.048,max=69.749,abs=69.749] contact_forces[min=-483.47,max=825.21,abs=825.21] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=500
+[cuda-debug] reached stage=after_post_physics_step step=500
+[cuda-debug] tensors stage=step_outputs step=500 observations[min=-5.122,max=3.923,abs=5.122] privileged_observations[min=-77.458,max=85.835,abs=85.835] rewards[min=0,max=0.052303,abs=0.052303] memory_mib[allocated=166.0,reserved=400.0]
+
+########################## Learning iteration 10/4999 ##########################
+                       Computation: 5253 steps/s
+                   Collection time: 4.303 s
+                     Learning time: 0.375 s
+               Value function loss: 0.0158
+                    Surrogate loss: -0.0222
+             Mean action noise std: 0.9992
+                       Mean reward: 2.03
+               Mean episode length: 271.82
+--------------------------------------------------------------------------------
+                   Total timesteps: 270336
+                    Iteration time: 4.68 s
+                        Total time: 52.23 s
+                               ETA: 6:28:56
+################################################################################
+
+########################## Learning iteration 11/4999 ##########################
+                       Computation: 5303 steps/s
+                   Collection time: 4.243 s
+                     Learning time: 0.391 s
+               Value function loss: 0.0145
+                    Surrogate loss: -0.0159
+             Mean action noise std: 0.9992
+                       Mean reward: 1.83
+               Mean episode length: 258.46
+--------------------------------------------------------------------------------
+                   Total timesteps: 294912
+                    Iteration time: 4.63 s
+                        Total time: 56.87 s
+                               ETA: 6:25:15
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=600 actions[min=-4.3581,max=3.5763,abs=4.3581] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=600 substep=0 actions[min=-4.3581,max=3.5763,abs=4.3581] torques[min=-139.86,max=209.8,abs=209.8] joint_pos_target[min=-3.4863,max=2.4641,abs=3.4863] forces[min=-70,max=70,abs=70] root_states[min=-2.9406,max=69.004,abs=69.004] dof_pos[min=-2.2356,max=1.923,abs=2.2356] dof_vel[min=-20.528,max=23.457,abs=23.457] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=600 substep=0
+[cuda-debug] reached stage=after_fetch_results step=600 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=600 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=600 substep=0 root_states[min=-2.997,max=69.004,abs=69.004] dof_pos[min=-2.2157,max=1.9243,abs=2.2157] dof_vel[min=-19.565,max=22.362,abs=22.362] rigid_body_state[min=-20.151,max=69.667,abs=69.667] contact_forces[min=-462.82,max=1172.7,abs=1172.7] memory_mib[allocated=165.8,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=600
+[cuda-debug] reached stage=after_post_physics_step step=600
+[cuda-debug] tensors stage=step_outputs step=600 observations[min=-4.3581,max=3.5763,abs=4.3581] privileged_observations[min=-86.869,max=93.082,abs=93.082] rewards[min=0,max=0.052204,abs=0.052204] memory_mib[allocated=166.0,reserved=400.0]
+
+########################## Learning iteration 12/4999 ##########################
+                       Computation: 5250 steps/s
+                   Collection time: 4.275 s
+                     Learning time: 0.407 s
+               Value function loss: 0.0135
+                    Surrogate loss: -0.0212
+             Mean action noise std: 0.9992
+                       Mean reward: 2.24
+               Mean episode length: 292.24
+--------------------------------------------------------------------------------
+                   Total timesteps: 319488
+                    Iteration time: 4.68 s
+                        Total time: 61.55 s
+                               ETA: 6:29:04
+################################################################################
+
+########################## Learning iteration 13/4999 ##########################
+                       Computation: 5165 steps/s
+                   Collection time: 4.359 s
+                     Learning time: 0.398 s
+               Value function loss: 0.0148
+                    Surrogate loss: -0.0180
+             Mean action noise std: 0.9992
+                       Mean reward: 2.20
+               Mean episode length: 288.82
+--------------------------------------------------------------------------------
+                   Total timesteps: 344064
+                    Iteration time: 4.76 s
+                        Total time: 66.31 s
+                               ETA: 6:35:22
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=700 actions[min=-4.0297,max=4.0871,abs=4.0871] memory_mib[allocated=165.9,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=700 substep=0 actions[min=-3.3739,max=4.0871,abs=4.0871] torques[min=-147.81,max=209.98,abs=209.98] joint_pos_target[min=-3.399,max=2.6514,abs=3.399] forces[min=-70,max=70,abs=70] root_states[min=-4.0394,max=69.198,abs=69.198] dof_pos[min=-2.1503,max=1.7697,abs=2.1503] dof_vel[min=-20.207,max=21.157,abs=21.157] memory_mib[allocated=165.9,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=700 substep=0
+[cuda-debug] reached stage=after_fetch_results step=700 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=700 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=700 substep=0 root_states[min=-4.3468,max=69.198,abs=69.198] dof_pos[min=-2.2001,max=1.7574,abs=2.2001] dof_vel[min=-19.221,max=20.17,abs=20.17] rigid_body_state[min=-21.715,max=69.857,abs=69.857] contact_forces[min=-344.36,max=902,abs=902] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=700
+[cuda-debug] reached stage=after_post_physics_step step=700
+[cuda-debug] tensors stage=step_outputs step=700 observations[min=-3.3739,max=4.0871,abs=4.0871] privileged_observations[min=-84.932,max=95.152,abs=95.152] rewards[min=0,max=0.052274,abs=0.052274] memory_mib[allocated=166.1,reserved=400.0]
+
+########################## Learning iteration 14/4999 ##########################
+                       Computation: 5248 steps/s
+                   Collection time: 4.278 s
+                     Learning time: 0.404 s
+               Value function loss: 0.0142
+                    Surrogate loss: -0.0239
+             Mean action noise std: 0.9990
+                       Mean reward: 2.24
+               Mean episode length: 320.00
+--------------------------------------------------------------------------------
+                   Total timesteps: 368640
+                    Iteration time: 4.68 s
+                        Total time: 70.99 s
+                               ETA: 6:29:03
+################################################################################
+
+########################## Learning iteration 15/4999 ##########################
+                       Computation: 5374 steps/s
+                   Collection time: 4.178 s
+                     Learning time: 0.395 s
+               Value function loss: 0.0154
+                    Surrogate loss: -0.0162
+             Mean action noise std: 0.9991
+                       Mean reward: 2.54
+               Mean episode length: 337.24
+--------------------------------------------------------------------------------
+                   Total timesteps: 393216
+                    Iteration time: 4.57 s
+                        Total time: 75.56 s
+                               ETA: 6:19:51
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=800 actions[min=-4.1088,max=3.9572,abs=4.1088] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=800 substep=0 actions[min=-4.1088,max=3.9572,abs=4.1088] torques[min=-209.29,max=209.57,abs=209.57] joint_pos_target[min=-3.1852,max=2.7163,abs=3.1852] forces[min=-70,max=70,abs=70] root_states[min=-3.6453,max=69.34,abs=69.34] dof_pos[min=-2.2473,max=1.7575,abs=2.2473] dof_vel[min=-24.561,max=22.536,abs=24.561] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=800 substep=0
+[cuda-debug] reached stage=after_fetch_results step=800 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=800 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=800 substep=0 root_states[min=-4.1074,max=69.34,abs=69.34] dof_pos[min=-2.2234,max=1.7478,abs=2.2234] dof_vel[min=-23.415,max=21.504,abs=23.415] rigid_body_state[min=-23.175,max=70.011,abs=70.011] contact_forces[min=-2088.6,max=6188,abs=6188] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=800
+[cuda-debug] reached stage=after_post_physics_step step=800
+[cuda-debug] tensors stage=step_outputs step=800 observations[min=-4.1088,max=3.9572,abs=4.1088] privileged_observations[min=-92.21,max=94.471,abs=94.471] rewards[min=0,max=0.057361,abs=0.057361] memory_mib[allocated=166.2,reserved=400.0]
+
+########################## Learning iteration 16/4999 ##########################
+                       Computation: 5265 steps/s
+                   Collection time: 4.294 s
+                     Learning time: 0.374 s
+               Value function loss: 0.0177
+                    Surrogate loss: -0.0217
+             Mean action noise std: 0.9989
+                       Mean reward: 2.23
+               Mean episode length: 313.07
+--------------------------------------------------------------------------------
+                   Total timesteps: 417792
+                    Iteration time: 4.67 s
+                        Total time: 80.23 s
+                               ETA: 6:27:36
+################################################################################
+
+########################## Learning iteration 17/4999 ##########################
+                       Computation: 5412 steps/s
+                   Collection time: 4.153 s
+                     Learning time: 0.387 s
+               Value function loss: 0.0145
+                    Surrogate loss: -0.0158
+             Mean action noise std: 0.9986
+                       Mean reward: 1.92
+               Mean episode length: 290.44
+--------------------------------------------------------------------------------
+                   Total timesteps: 442368
+                    Iteration time: 4.54 s
+                        Total time: 84.77 s
+                               ETA: 6:17:01
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=900 actions[min=-4.0287,max=3.6725,abs=4.0287] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=900 substep=0 actions[min=-4.0287,max=3.6725,abs=4.0287] torques[min=-174.47,max=209.78,abs=209.78] joint_pos_target[min=-3.5743,max=2.4686,abs=3.5743] forces[min=-70,max=70,abs=70] root_states[min=-3.322,max=69.391,abs=69.391] dof_pos[min=-2.1732,max=1.7733,abs=2.1732] dof_vel[min=-20.55,max=21.005,abs=21.005] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=900 substep=0
+[cuda-debug] reached stage=after_fetch_results step=900 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=900 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=900 substep=0 root_states[min=-3.2145,max=69.391,abs=69.391] dof_pos[min=-2.1652,max=1.7754,abs=2.1652] dof_vel[min=-19.604,max=20.021,abs=20.021] rigid_body_state[min=-22.081,max=69.903,abs=69.903] contact_forces[min=-608.77,max=1141.7,abs=1141.7] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=900
+[cuda-debug] reached stage=after_post_physics_step step=900
+[cuda-debug] tensors stage=step_outputs step=900 observations[min=-4.0287,max=3.6725,abs=4.0287] privileged_observations[min=-96.721,max=91.63,abs=96.721] rewards[min=0,max=0.047188,abs=0.047188] memory_mib[allocated=166.2,reserved=400.0]
+
+########################## Learning iteration 18/4999 ##########################
+                       Computation: 5321 steps/s
+                   Collection time: 4.218 s
+                     Learning time: 0.400 s
+               Value function loss: 0.0142
+                    Surrogate loss: -0.0233
+             Mean action noise std: 0.9981
+                       Mean reward: 2.45
+               Mean episode length: 329.96
+--------------------------------------------------------------------------------
+                   Total timesteps: 466944
+                    Iteration time: 4.62 s
+                        Total time: 89.39 s
+                               ETA: 6:23:24
+################################################################################
+
+########################## Learning iteration 19/4999 ##########################
+                       Computation: 5269 steps/s
+                   Collection time: 4.261 s
+                     Learning time: 0.403 s
+               Value function loss: 0.0146
+                    Surrogate loss: -0.0164
+             Mean action noise std: 0.9977
+                       Mean reward: 2.69
+               Mean episode length: 423.36
+--------------------------------------------------------------------------------
+                   Total timesteps: 491520
+                    Iteration time: 4.66 s
+                        Total time: 94.05 s
+                               ETA: 6:27:03
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=1000 actions[min=-4.3014,max=4.1216,abs=4.3014] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=1000 substep=0 actions[min=-4.3014,max=4.1216,abs=4.3014] torques[min=-192.24,max=209.62,abs=209.62] joint_pos_target[min=-2.9497,max=2.2584,abs=2.9497] forces[min=-70,max=70,abs=70] root_states[min=-3.5223,max=69.416,abs=69.416] dof_pos[min=-2.3616,max=1.7784,abs=2.3616] dof_vel[min=-22.703,max=21.691,abs=22.703] memory_mib[allocated=166.0,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=1000 substep=0
+[cuda-debug] reached stage=after_fetch_results step=1000 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=1000 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=1000 substep=0 root_states[min=-3.7435,max=69.416,abs=69.416] dof_pos[min=-2.3619,max=1.7847,abs=2.3619] dof_vel[min=-21.688,max=20.708,abs=21.688] rigid_body_state[min=-21.864,max=69.873,abs=69.873] contact_forces[min=-414.36,max=921.33,abs=921.33] memory_mib[allocated=166.1,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=1000
+[cuda-debug] reached stage=after_post_physics_step step=1000
+[cuda-debug] tensors stage=step_outputs step=1000 observations[min=-4.3014,max=4.1216,abs=4.3014] privileged_observations[min=-98.99,max=95.116,abs=98.99] rewards[min=0,max=0.050788,abs=0.050788] memory_mib[allocated=166.2,reserved=400.0]
+
+########################## Learning iteration 20/4999 ##########################
+                       Computation: 5279 steps/s
+                   Collection time: 4.257 s
+                     Learning time: 0.398 s
+               Value function loss: 0.0126
+                    Surrogate loss: -0.0241
+             Mean action noise std: 0.9970
+                       Mean reward: 2.70
+               Mean episode length: 454.31
+--------------------------------------------------------------------------------
+                   Total timesteps: 516096
+                    Iteration time: 4.66 s
+                        Total time: 98.71 s
+                               ETA: 6:26:18
+################################################################################
+
+########################## Learning iteration 21/4999 ##########################
+                       Computation: 5288 steps/s
+                   Collection time: 4.258 s
+                     Learning time: 0.389 s
+               Value function loss: 0.0161
+                    Surrogate loss: -0.0163
+             Mean action noise std: 0.9971
+                       Mean reward: 2.59
+               Mean episode length: 440.35
+--------------------------------------------------------------------------------
+                   Total timesteps: 540672
+                    Iteration time: 4.65 s
+                        Total time: 103.35 s
+                               ETA: 6:25:32
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=1100 actions[min=-4.1134,max=5.382,abs=5.382] memory_mib[allocated=166.2,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=1100 substep=0 actions[min=-4.0748,max=5.382,abs=5.382] torques[min=-187.96,max=209.34,abs=209.34] joint_pos_target[min=-3.2168,max=2.9166,abs=3.2168] forces[min=-70,max=70,abs=70] root_states[min=-3.2874,max=69.551,abs=69.551] dof_pos[min=-2.2601,max=1.8102,abs=2.2601] dof_vel[min=-22.965,max=19.971,abs=22.965] memory_mib[allocated=166.2,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=1100 substep=0
+[cuda-debug] reached stage=after_fetch_results step=1100 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=1100 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=1100 substep=0 root_states[min=-3.5272,max=69.55,abs=69.55] dof_pos[min=-2.2854,max=1.8158,abs=2.2854] dof_vel[min=-21.904,max=19.044,abs=21.904] rigid_body_state[min=-22.756,max=69.986,abs=69.986] contact_forces[min=-11040,max=11975,abs=11975] memory_mib[allocated=166.2,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=1100
+[cuda-debug] reached stage=after_post_physics_step step=1100
+[cuda-debug] tensors stage=step_outputs step=1100 observations[min=-4.0748,max=5.382,abs=5.382] privileged_observations[min=-83.756,max=98.902,abs=98.902] rewards[min=0,max=0.057477,abs=0.057477] memory_mib[allocated=166.4,reserved=400.0]
+
+########################## Learning iteration 22/4999 ##########################
+                       Computation: 5214 steps/s
+                   Collection time: 4.324 s
+                     Learning time: 0.389 s
+               Value function loss: 0.0197
+                    Surrogate loss: -0.0208
+             Mean action noise std: 0.9972
+                       Mean reward: 2.19
+               Mean episode length: 490.52
+--------------------------------------------------------------------------------
+                   Total timesteps: 565248
+                    Iteration time: 4.71 s
+                        Total time: 108.07 s
+                               ETA: 6:30:57
+################################################################################
+
+########################## Learning iteration 23/4999 ##########################
+                       Computation: 5435 steps/s
+                   Collection time: 4.156 s
+                     Learning time: 0.365 s
+               Value function loss: 0.0183
+                    Surrogate loss: -0.0161
+             Mean action noise std: 0.9971
+                       Mean reward: 2.63
+               Mean episode length: 514.73
+--------------------------------------------------------------------------------
+                   Total timesteps: 589824
+                    Iteration time: 4.52 s
+                        Total time: 112.59 s
+                               ETA: 6:14:58
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=1200 actions[min=-4.0383,max=4.1927,abs=4.1927] memory_mib[allocated=166.3,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=1200 substep=0 actions[min=-4.0383,max=4.1927,abs=4.1927] torques[min=-177.07,max=209.78,abs=209.78] joint_pos_target[min=-3.4539,max=2.6417,abs=3.4539] forces[min=-70,max=70,abs=70] root_states[min=-2.8949,max=69.643,abs=69.643] dof_pos[min=-2.2258,max=1.9161,abs=2.2258] dof_vel[min=-19.666,max=22.764,abs=22.764] memory_mib[allocated=166.3,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=1200 substep=0
+[cuda-debug] reached stage=after_fetch_results step=1200 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=1200 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=1200 substep=0 root_states[min=-2.8552,max=69.642,abs=69.642] dof_pos[min=-2.2814,max=1.915,abs=2.2814] dof_vel[min=-18.423,max=21.648,abs=21.648] rigid_body_state[min=-25.45,max=70.052,abs=70.052] contact_forces[min=-1741.5,max=3139.7,abs=3139.7] memory_mib[allocated=166.4,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=1200
+[cuda-debug] reached stage=after_post_physics_step step=1200
+[cuda-debug] tensors stage=step_outputs step=1200 observations[min=-4.0383,max=4.1927,abs=4.1927] privileged_observations[min=-95.345,max=86.412,abs=95.345] rewards[min=0,max=0.049613,abs=0.049613] memory_mib[allocated=166.6,reserved=400.0]
+
+########################## Learning iteration 24/4999 ##########################
+                       Computation: 5268 steps/s
+                   Collection time: 4.275 s
+                     Learning time: 0.390 s
+               Value function loss: 0.0197
+                    Surrogate loss: -0.0210
+             Mean action noise std: 0.9971
+                       Mean reward: 3.19
+               Mean episode length: 522.82
+--------------------------------------------------------------------------------
+                   Total timesteps: 614400
+                    Iteration time: 4.66 s
+                        Total time: 117.25 s
+                               ETA: 6:26:48
+################################################################################
+
+########################## Learning iteration 25/4999 ##########################
+                       Computation: 5447 steps/s
+                   Collection time: 4.121 s
+                     Learning time: 0.390 s
+               Value function loss: 0.0195
+                    Surrogate loss: -0.0166
+             Mean action noise std: 0.9971
+                       Mean reward: 3.86
+               Mean episode length: 513.10
+--------------------------------------------------------------------------------
+                   Total timesteps: 638976
+                    Iteration time: 4.51 s
+                        Total time: 121.77 s
+                               ETA: 6:13:59
+################################################################################
+
+########################## Learning iteration 26/4999 ##########################
+                       Computation: 5571 steps/s
+                   Collection time: 4.032 s
+                     Learning time: 0.379 s
+               Value function loss: 0.0186
+                    Surrogate loss: -0.0195
+             Mean action noise std: 0.9970
+                       Mean reward: 4.17
+               Mean episode length: 489.30
+--------------------------------------------------------------------------------
+                   Total timesteps: 663552
+                    Iteration time: 4.41 s
+                        Total time: 126.18 s
+                               ETA: 6:05:36
+################################################################################
+[cuda-debug] tensors stage=clipped_actions step=1300 actions[min=-4.3186,max=4.1599,abs=4.3186] memory_mib[allocated=165.4,reserved=400.0]
+[cuda-debug] tensors stage=before_simulate step=1300 substep=0 actions[min=-4.3186,max=4.1599,abs=4.3186] torques[min=-185.1,max=209.65,abs=209.65] joint_pos_target[min=-3.1699,max=2.52,abs=3.1699] forces[min=-70,max=70,abs=70] root_states[min=-2.5058,max=69.188,abs=69.188] dof_pos[min=-2.1288,max=1.9336,abs=2.1288] dof_vel[min=-21.181,max=22.755,abs=22.755] memory_mib[allocated=165.4,reserved=400.0]
+[cuda-debug] reached stage=before_simulate step=1300 substep=0
+[cuda-debug] reached stage=after_fetch_results step=1300 substep=0
+[cuda-debug] reached stage=after_refresh_tensors step=1300 substep=0
+[cuda-debug] tensors stage=after_refresh_tensors step=1300 substep=0 root_states[min=-2.8463,max=69.187,abs=69.187] dof_pos[min=-2.1017,max=1.9599,abs=2.1017] dof_vel[min=-20.195,max=21.738,abs=21.738] rigid_body_state[min=-21.69,max=69.804,abs=69.804] contact_forces[min=-295.66,max=878.67,abs=878.67] memory_mib[allocated=165.5,reserved=400.0]
+[cuda-debug] reached stage=before_post_physics_step step=1300
+[cuda-debug] reached stage=after_post_physics_step step=1300
+[cuda-debug] tensors stage=step_outputs step=1300 observations[min=-4.3186,max=4.1599,abs=4.3186] privileged_observations[min=-80.829,max=86.622,abs=86.622] rewards[min=0,max=0.053475,abs=0.053475] memory_mib[allocated=165.7,reserved=400.0]
+
+########################## Learning iteration 27/4999 ##########################
+                       Computation: 5504 steps/s
+                   Collection time: 4.079 s
+                     Learning time: 0.386 s
+               Value function loss: 0.0179
+                    Surrogate loss: -0.0102
+             Mean action noise std: 0.9969
+                       Mean reward: 3.38
+               Mean episode length: 493.32
+--------------------------------------------------------------------------------
+                   Total timesteps: 688128
+                    Iteration time: 4.47 s
+                        Total time: 130.64 s
+                               ETA: 6:10:00
+################################################################################

@@ -7,7 +7,7 @@ from wbc_compliance_gym.utils.config_utils import config_fingerprint
 
 
 EXPECTED_ENV_CONFIG_SHA256 = (
-    "e05f1682ed01fd52b847ebd14e4cf185de228ede91e9f42bbdf1ecdba53b5f4f"
+    "f45436c5e5ec92900b95712ae4747d519c19ca71697b6cf2c2799ecc3c491e03"
 )
 EXPECTED_TRAIN_CONFIG_SHA256 = (
     "3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b"
@@ -23,6 +23,8 @@ class B1Z1ConfigContract(unittest.TestCase):
         self.assertEqual(cfg.env.num_observation_history, 10)
         self.assertEqual(cfg.env.num_actions, 19)
         self.assertEqual(cfg.commands.num_commands, 23)
+        self.assertEqual(cfg.asset.self_collisions, 1)
+        self.assertEqual(cfg.sim.physx.max_gpu_contact_pairs, 2 ** 24)
 
     def test_training_config_matches_pre_refactor_baseline(self):
         cfg = B1Z1CfgPPO()

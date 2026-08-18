@@ -199,7 +199,35 @@ python scripts/train.py \
 python scripts/train.py --task b1_z1_ik --viewer
 ```
 
-### 6.3 从该任务最新 run 续训
+### 6.3 CUDA/PhysX 崩溃调试
+
+物理调试模式默认关闭。复现 CUDA 非法访存、PhysX contact kernel 崩溃或不明
+NaN/Inf 时，可先缩小环境数量并开启同步检查：
+
+```bash
+COMPLIANCE_CUDA_DEBUG=1 \
+COMPLIANCE_CUDA_DEBUG_INTERVAL=100 \
+CUDA_LAUNCH_BLOCKING=1 \
+python scripts/train.py --task b1_z1_ik --num-envs 512
+```
+
+该模式会打印最终使用的环境数和 PhysX contact buffer 配置，在每个物理子步检查
+action、torque、force、DOF、root/body state 和 contact force，并在首次发现 NaN/Inf
+时报告 tensor 名称、索引和环境 ID。它还会列出最严重的硬限位越界、目标夹紧、
+速度超限和接触力，包含对应的环境 ID、关节名或刚体名。若 CUDA 异步错误在同步点
+暴露，日志会附上具体物理阶段以及最后一组有效的 tensor、DOF 和接触诊断。
+
+- `COMPLIANCE_CUDA_DEBUG_INTERVAL`：周期统计输出间隔，默认 `100` 个控制步。
+- `COMPLIANCE_CUDA_DEBUG_SYNC`：是否在关键阶段主动同步 CUDA，默认 `1`。
+
+完整 tensor 检查和 CUDA 同步会明显降低训练速度，仅在复现问题时开启。正常训练
+不要设置 `COMPLIANCE_CUDA_DEBUG`。
+
+B1+Z1 任务还启用了三项常驻保护：位置目标被夹紧到 URDF 硬限位；
+`asset.self_collisions = 1`（Isaac Gym 中 `1` 表示禁用自碰撞）；GPU contact pair
+容量提升为 `2 ** 24`。这些设置在不开启 debug 时同样生效。
+
+### 6.4 从该任务最新 run 续训
 
 ```bash
 python scripts/train.py \
@@ -210,7 +238,7 @@ python scripts/train.py \
 
 `--resume` 未指定目录时，会自动选取 `logs/b1_z1_ik/` 下最新的有效 run。
 
-### 6.4 从指定 run/checkpoint 续训
+### 6.5 从指定 run/checkpoint 续训
 
 ```bash
 python scripts/train.py \

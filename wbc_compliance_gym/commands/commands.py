@@ -185,11 +185,93 @@ class CommandLifecycleMixin:
     change random-number order, tensor allocation, or the physics-step path.
     """
 
+    def _end_effector_body_name(self):
+        return getattr(self.cfg.asset, "end_effector_name", "gripperStator")
+
+    def _arm_mount_parameters(self):
+        translation = getattr(
+            self.cfg.commands,
+            "arm_mount_translation",
+            [TRANSFORM_BASE_ARM_X, 0.0, TRANSFORM_BASE_ARM_Z],
+        )
+        yaw = getattr(self.cfg.commands, "arm_mount_yaw", 0.0)
+        base_height = getattr(
+            self.cfg.commands, "command_base_height", DEFAULT_BASE_HEIGHT
+        )
+        return translation, yaw, base_height
+
+    def _arm_position_to_base(self, position_arm):
+        """Transform arm-frame XYZ positions to the robot base frame."""
+        translation, yaw, _ = self._arm_mount_parameters()
+        if yaw == 0.0:
+            position_base = torch.zeros_like(position_arm)
+            position_base[:, 0] = position_arm[:, 0] + translation[0]
+            position_base[:, 1] = position_arm[:, 1] + translation[1]
+            position_base[:, 2] = position_arm[:, 2] + translation[2]
+            return position_base
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+        position_base = torch.zeros_like(position_arm)
+        position_base[:, 0] = (
+            cos_yaw * position_arm[:, 0]
+            - sin_yaw * position_arm[:, 1]
+            + translation[0]
+        )
+        position_base[:, 1] = (
+            sin_yaw * position_arm[:, 0]
+            + cos_yaw * position_arm[:, 1]
+            + translation[1]
+        )
+        position_base[:, 2] = position_arm[:, 2] + translation[2]
+        return position_base
+
+    def _base_position_to_arm(self, position_base):
+        """Transform robot-base-frame XYZ positions to the arm frame."""
+        translation, yaw, _ = self._arm_mount_parameters()
+        translated = position_base.clone()
+        translated[:, 0] -= translation[0]
+        translated[:, 1] -= translation[1]
+        translated[:, 2] -= translation[2]
+        if yaw == 0.0:
+            return translated
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+        position_arm = torch.zeros_like(translated)
+        position_arm[:, 0] = (
+            cos_yaw * translated[:, 0] + sin_yaw * translated[:, 1]
+        )
+        position_arm[:, 1] = (
+            -sin_yaw * translated[:, 0] + cos_yaw * translated[:, 1]
+        )
+        position_arm[:, 2] = translated[:, 2]
+        return position_arm
+
+    def _command_base_position_world(self):
+        """Return the yaw-following, height-independent command-frame origin."""
+        _, _, base_height = self._arm_mount_parameters()
+        return torch.cat(
+            (
+                self.base_pos[:, 0:1],
+                self.base_pos[:, 1:2],
+                torch.ones_like(self.base_pos[:, 2:3]) * base_height,
+            ),
+            dim=1,
+        )
+
+    # Public forwarding points are needed because Gym wrappers intentionally
+    # block access to private attributes from task reward containers.
+    def arm_position_to_base(self, position_arm):
+        return self._arm_position_to_base(position_arm)
+
+    def command_base_position_world(self):
+        return self._command_base_position_world()
+
     def is_ee_cmd_feasible(self, radius_cmd, pitch_cmd):
         commands_feasible = True
         z_cmd_arm = -radius_cmd * torch.sin(pitch_cmd)
+        translation, _, base_height = self._arm_mount_parameters()
         z_cmd_world = z_cmd_arm.add_(
-            TRANSFORM_BASE_ARM_Z + DEFAULT_BASE_HEIGHT
+            translation[2] + base_height
         )
 
         env_ids = torch.arange(radius_cmd.shape[0], device=self.device)
@@ -201,7 +283,9 @@ class CommandLifecycleMixin:
     def get_measured_ee_pos_spherical(self) -> torch.Tensor:
         """Return measured EE position in arm-frame spherical coordinates."""
         ee_idx = self.gym.find_actor_rigid_body_handle(
-            self.envs[0], self.robot_actor_handles[0], "gripperStator"
+            self.envs[0],
+            self.robot_actor_handles[0],
+            self._end_effector_body_name(),
         )
         ee_position_world = self.rigid_body_state[
             :, ee_idx, 0:3
@@ -215,26 +299,12 @@ class CommandLifecycleMixin:
             base_rpy_world[:, 2],
         )
 
-        x_base_pos_world = self.base_pos[:, 0].view(self.num_envs, 1)
-        y_base_pos_world = self.base_pos[:, 1].view(self.num_envs, 1)
-        z_base_pos_world = torch.ones_like(
-            self.base_pos[:, 2].view(self.num_envs, 1)
-        ) * DEFAULT_BASE_HEIGHT
-        base_position_world = torch.cat(
-            (x_base_pos_world, y_base_pos_world, z_base_pos_world), dim=1
-        )
+        base_position_world = self._command_base_position_world()
 
         ee_position_base = quat_rotate_inverse(
             base_quat_world_indep, ee_position_world - base_position_world
         ).view(self.num_envs, 3)
-        ee_position_arm = torch.zeros_like(ee_position_base)
-        ee_position_arm[:, 0] = ee_position_base[:, 0].add_(
-            -TRANSFORM_BASE_ARM_X
-        )
-        ee_position_arm[:, 1] = ee_position_base[:, 1]
-        ee_position_arm[:, 2] = ee_position_base[:, 2].add_(
-            -TRANSFORM_BASE_ARM_Z
-        )
+        ee_position_arm = self._base_position_to_arm(ee_position_base)
 
         radius = torch.norm(ee_position_arm, dim=1).view(self.num_envs, 1)
         pitch = -torch.asin(
@@ -260,11 +330,8 @@ class CommandLifecycleMixin:
         x_cmd_arm = radius_cmd * torch.cos(pitch_cmd) * torch.cos(yaw_cmd)
         y_cmd_arm = radius_cmd * torch.cos(pitch_cmd) * torch.sin(yaw_cmd)
         z_cmd_arm = -radius_cmd * torch.sin(pitch_cmd)
-        x_cmd_base = x_cmd_arm.add_(TRANSFORM_BASE_ARM_X)
-        y_cmd_base = y_cmd_arm
-        z_cmd_base = z_cmd_arm.add_(TRANSFORM_BASE_ARM_Z)
-        ee_position_cmd_base = torch.cat(
-            (x_cmd_base, y_cmd_base, z_cmd_base), dim=1
+        ee_position_cmd_base = self._arm_position_to_base(
+            torch.cat((x_cmd_arm, y_cmd_arm, z_cmd_arm), dim=1)
         )
         ee_position_cmd_world = quat_rotate_inverse(
             quat_conjugate(base_quat_world_indep), ee_position_cmd_base
@@ -276,7 +343,9 @@ class CommandLifecycleMixin:
 
     def get_measured_ee_rpy_yrf(self) -> torch.Tensor:
         ee_idx = self.gym.find_actor_rigid_body_handle(
-            self.envs[0], self.robot_actor_handles[0], "gripperStator"
+            self.envs[0],
+            self.robot_actor_handles[0],
+            self._end_effector_body_name(),
         )
         ee_quat = self.rigid_body_state[:, ee_idx, 3:7].view(
             self.num_envs, 4

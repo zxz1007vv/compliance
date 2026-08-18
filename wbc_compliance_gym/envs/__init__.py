@@ -22,4 +22,23 @@ def register_tasks():
         wrappers=(HistoryWrapper,),
         play_cfg_hook=configure_b1_z1_play,
     )
+
+    from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
+        ZGWSARMComplianceCfg,
+        ZGWSARMComplianceCfgPPO,
+        configure_zgwsarm_compliance_play,
+    )
+    from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_env import (
+        ZGWSARMComplianceEnv,
+    )
+
+    task_registry.register(
+        "zgwsarm_compliance",
+        ZGWSARMComplianceEnv,
+        ZGWSARMComplianceCfg,
+        ZGWSARMComplianceCfgPPO,
+        OnPolicyRunner,
+        wrappers=(HistoryWrapper,),
+        play_cfg_hook=configure_zgwsarm_compliance_play,
+    )
     return task_registry

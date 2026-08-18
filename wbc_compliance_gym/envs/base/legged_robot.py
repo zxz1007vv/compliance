@@ -93,9 +93,17 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         for o in range(self.cfg.control.decimation):
 
             if self.cfg.commands.control_only_z1:
-                self.actions[:, :12] = torch.zeros((self.num_envs, 12), dtype=torch.float32, device=self.device)
+                if getattr(self, "has_custom_dof_layout", False):
+                    self.actions[:, self.motion_dof_indices] = 0.0
+                else:
+                    self.actions[:, :12] = torch.zeros((self.num_envs, 12), dtype=torch.float32, device=self.device)
 
-            if self.cfg.env.num_actions >= 18:
+            if getattr(self, "has_custom_dof_layout", False):
+                for dof_name, value in getattr(
+                    self.cfg.asset, "fixed_action_targets", {}
+                ).items():
+                    self.actions[:, self.dof_name_to_index[dof_name]] = value
+            elif self.cfg.env.num_actions >= 18:
                 self.actions[:, 18] = -0.1 # set joint6 and gripper to 0  
 
             self._compute_torques(self.actions)
@@ -103,7 +111,10 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                 self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.joint_pos_target))
                 apply_torques = self.torques.clone()
                 # print(apply_torques.shape)
-                apply_torques[:, 12:] = 0
+                if getattr(self, "has_custom_dof_layout", False):
+                    apply_torques[:, self.arm_dof_indices] = 0
+                else:
+                    apply_torques[:, 12:] = 0
                 self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(apply_torques))
             elif self.cfg.asset.default_dof_drive_mode == 1: # position
                 self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(self.joint_pos_target))
@@ -139,7 +150,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             self.gym.refresh_actor_root_state_tensor(self.sim)
             self.gym.refresh_net_contact_force_tensor(self.sim)
             self.gym.refresh_rigid_body_state_tensor(self.sim)
-            
+
         self.post_physics_step()
 
         # return clipped obs, clipped states (None), rewards, dones and infos
@@ -307,7 +318,8 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             self.reset_buf = torch.logical_or(self.body_height_buf, self.reset_buf)
 
         if self.cfg.rewards.use_terminal_torque_legs_limits:
-            above_torque_lim = torch.any((torch.abs(self.torques[:,:12]) - self.torque_limits[:12] * self.cfg.rewards.soft_torque_limit_leg) > 0.0, dim=1).view(self.num_envs)
+            leg_indices = self.leg_dof_indices if getattr(self, "has_custom_dof_layout", False) else slice(None, 12)
+            above_torque_lim = torch.any((torch.abs(self.torques[:, leg_indices]) - self.torque_limits[leg_indices] * self.cfg.rewards.soft_torque_limit_leg) > 0.0, dim=1).view(self.num_envs)
             sim_started_while_ago = self.episode_length_buf > self.cfg.rewards.termination_torque_min_time
 
             self.legs_torque_lim_buff = torch.logical_and(above_torque_lim, sim_started_while_ago)
@@ -315,7 +327,8 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             self.reset_buf = torch.logical_or(self.legs_torque_lim_buff, self.reset_buf)
 
         if self.cfg.rewards.use_terminal_torque_arm_limits:
-            above_torque_lim = torch.any((torch.abs(self.torques[:,12:]) - self.torque_limits[12:] * self.cfg.rewards.soft_torque_limit_arm) > 0.0, dim=1).view(self.num_envs)
+            arm_indices = self.arm_dof_indices if getattr(self, "has_custom_dof_layout", False) else slice(12, None)
+            above_torque_lim = torch.any((torch.abs(self.torques[:, arm_indices]) - self.torque_limits[arm_indices] * self.cfg.rewards.soft_torque_limit_arm) > 0.0, dim=1).view(self.num_envs)
             sim_started_while_ago = self.episode_length_buf > self.cfg.rewards.termination_torque_min_time
 
             self.arm_torque_lim_buff = torch.logical_and(above_torque_lim, sim_started_while_ago)
@@ -805,6 +818,9 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         Returns:
             [numpy.array]: Modified DOF properties
         """
+        if getattr(self, "has_custom_dof_layout", False):
+            return self._process_custom_dof_props(props, env_id)
+
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(self.num_dof, 2, dtype=torch.float, device=self.device,
                                               requires_grad=False)
@@ -859,6 +875,99 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         # print("troque lim legs =: ", self.torque_limits[:12])
         # print("troque lim arm =: ", self.torque_limits[12:])
 
+        return props
+
+    def _process_custom_dof_props(self, props, env_id):
+        """Configure a named, non-contiguous DOF layout for non-B1 robots."""
+        if env_id != 0:
+            return props
+
+        self.dof_pos_limits = torch.zeros(
+            self.num_dof, 2, dtype=torch.float, device=self.device
+        )
+        self.dof_vel_limits = torch.zeros(
+            self.num_dof, dtype=torch.float, device=self.device
+        )
+        self.torque_limits = torch.zeros(
+            self.num_dof, dtype=torch.float, device=self.device
+        )
+        self.dof_damping = torch.zeros(
+            self.num_dof, dtype=torch.float, device=self.device
+        )
+        self.dof_friction = torch.zeros(
+            self.num_dof, dtype=torch.float, device=self.device
+        )
+
+        gain_groups = (
+            (
+                self.leg_dof_indices.tolist(),
+                self.cfg.commands.p_gains_legs,
+                self.cfg.commands.d_gains_legs,
+            ),
+            (
+                self.wheel_dof_indices.tolist(),
+                self.cfg.commands.p_gains_wheels,
+                self.cfg.commands.d_gains_wheels,
+            ),
+            (
+                self.arm_dof_indices.tolist(),
+                self.cfg.commands.p_gains_arm,
+                self.cfg.commands.d_gains_arm,
+            ),
+        )
+        gains = {}
+        for indices, p_gains, d_gains in gain_groups:
+            if len(indices) != len(p_gains) or len(indices) != len(d_gains):
+                raise ValueError(
+                    "Named DOF groups and PD gain arrays must have equal lengths"
+                )
+            gains.update(
+                (index, (p_gain, d_gain))
+                for index, p_gain, d_gain in zip(indices, p_gains, d_gains)
+            )
+
+        arm_indices = set(self.arm_dof_indices.tolist())
+        leg_indices = set(self.leg_dof_indices.tolist())
+        for i in range(len(props)):
+            self.dof_pos_limits[i, 0] = props["lower"][i].item()
+            self.dof_pos_limits[i, 1] = props["upper"][i].item()
+            self.dof_vel_limits[i] = props["velocity"][i].item()
+            self.torque_limits[i] = props["effort"][i].item()
+            self.dof_damping[i] = props["damping"][i].item()
+            self.dof_friction[i] = props["friction"][i].item()
+
+            p_gain, d_gain = gains[i]
+            if self.cfg.asset.default_dof_drive_mode == 0:
+                if i in arm_indices:
+                    props["stiffness"][i] = p_gain
+                    props["damping"][i] = d_gain
+                    props["driveMode"][i] = gymapi.DOF_MODE_POS
+                else:
+                    props["stiffness"][i] = 0
+                    props["damping"][i] = 0
+                    props["driveMode"][i] = gymapi.DOF_MODE_EFFORT
+            elif self.cfg.asset.default_dof_drive_mode == 1:
+                props["stiffness"][i] = p_gain
+                props["damping"][i] = d_gain
+                props["driveMode"][i] = gymapi.DOF_MODE_POS
+            elif self.cfg.asset.default_dof_drive_mode == 3:
+                props["stiffness"][i] = 0
+                props["damping"][i] = 0
+                props["driveMode"][i] = gymapi.DOF_MODE_EFFORT
+            else:
+                raise ValueError("Drive mode not found")
+
+            if i in leg_indices:
+                midpoint = (
+                    self.dof_pos_limits[i, 0] + self.dof_pos_limits[i, 1]
+                ) / 2
+                span = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
+                self.dof_pos_limits[i, 0] = (
+                    midpoint - 0.5 * span * self.cfg.rewards.soft_dof_pos_limit
+                )
+                self.dof_pos_limits[i, 1] = (
+                    midpoint + 0.5 * span * self.cfg.rewards.soft_dof_pos_limit
+                )
         return props
 
     def _randomize_rigid_body_props(self, env_ids, cfg):
@@ -943,11 +1052,15 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                                                     max_kd - min_kd) + min_kd
 
     def _process_rigid_body_props(self, props, env_id):
-        self.default_body_mass = props[0].mass
+        base_index = getattr(self, "robot_base_index", 0)
+        self.default_body_mass = props[base_index].mass
 
-        props[0].mass = self.default_body_mass + self.payloads[env_id]
-        props[0].com = gymapi.Vec3(self.com_displacements[env_id, 0], self.com_displacements[env_id, 1],
-                                   self.com_displacements[env_id, 2])
+        props[base_index].mass = self.default_body_mass + self.payloads[env_id]
+        props[base_index].com = gymapi.Vec3(
+            self.com_displacements[env_id, 0],
+            self.com_displacements[env_id, 1],
+            self.com_displacements[env_id, 2],
+        )
         return props
 
     def _post_physics_step_callback(self):
@@ -1015,7 +1128,10 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         # pd controller
         actions_scaled = torch.zeros(self.num_envs, self.num_dof, device = self.device)
         actions_scaled[:, :self.num_actions] = actions[:, :self.num_actions] * self.cfg.control.action_scale
-        if self.num_actions >= 12:
+        if getattr(self, "has_custom_dof_layout", False):
+            actions_scaled[:, self.hip_dof_indices] *= self.cfg.control.hip_scale_reduction
+            actions_scaled[:, self.arm_dof_indices] *= self.cfg.control.arm_scale_reduction
+        elif self.num_actions >= 12:
             actions_scaled[:, [0, 3, 6, 9]] *= self.cfg.control.hip_scale_reduction  # scale down hip flexion range
             actions_scaled[:, 12:] *= self.cfg.control.arm_scale_reduction
 
@@ -1090,7 +1206,20 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             env_ids (List[int]): Environemnt ids
         """
         self.dof_pos[env_ids] = self.default_dof_pos #+ torch_rand_float(-0.1, 0.1, (len(env_ids), self.num_dof), device=self.device)
-        self.dof_pos[env_ids, 12:18] += torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
+        if getattr(self, "has_custom_dof_layout", False):
+            arm_count = self.arm_dof_indices.numel()
+            self.dof_pos[env_ids.unsqueeze(1), self.arm_dof_indices] += torch_rand_float(
+                -0.5, 0.5, (len(env_ids), arm_count), device=self.device
+            )
+            self.dof_pos[env_ids.unsqueeze(1), self.arm_dof_indices] = torch.maximum(
+                torch.minimum(
+                    self.dof_pos[env_ids.unsqueeze(1), self.arm_dof_indices],
+                    self.dof_pos_limits[self.arm_dof_indices, 1],
+                ),
+                self.dof_pos_limits[self.arm_dof_indices, 0],
+            )
+        else:
+            self.dof_pos[env_ids, 12:18] += torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
         self.joint_pos_target[env_ids] = self.default_dof_pos
         # if len(self.default_dof_pos_RL):
         #     self.dof_pos[env_ids, :12] = self.default_dof_pos_RL * torch_rand_float(0.9, 1.1, (len(env_ids), 12), device=self.device)
@@ -1307,10 +1436,9 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         z_cmd_arm = - radius_cmd*torch.sin(pitch_cmd)
 
         # Cartesian coordinates in the base frame
-        x_cmd_base = x_cmd_arm.add_(TRANSFORM_BASE_ARM_X)
-        y_cmd_base = y_cmd_arm
-        z_cmd_base = z_cmd_arm.add_(TRANSFORM_BASE_ARM_Z)
-        ee_position_cmd_base = torch.cat((x_cmd_base, y_cmd_base, z_cmd_base), dim=1)
+        ee_position_cmd_base = self._arm_position_to_base(
+            torch.cat((x_cmd_arm, y_cmd_arm, z_cmd_arm), dim=1)
+        )
 
         # Commands in world frame
         base_quat_world = self.base_quat.view(self.num_envs,4)
@@ -1321,16 +1449,17 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         base_quat_world_indep = quat_from_euler_xyz(base_rpy_world[:, 0], base_rpy_world[:, 1], base_rpy_world[:, 2]).view(self.num_envs,4)
 
         # Make the commands independent from base height 
-        x_base_pos_world = self.base_pos[:, 0].view(self.num_envs, 1) 
-        y_base_pos_world = self.base_pos[:, 1].view(self.num_envs, 1) 
-        z_base_pos_world = torch.ones_like(self.base_pos[:, 2].view(self.num_envs, 1))*DEFAULT_BASE_HEIGHT
-        base_position_world = torch.cat((x_base_pos_world, y_base_pos_world, z_base_pos_world), dim=1)
+        base_position_world = self._command_base_position_world()
 
         # Command in cartesian coordinates in world frame 
         self.ee_position_cmd_world = quat_rotate_inverse(quat_conjugate(base_quat_world_indep), ee_position_cmd_base) + base_position_world
 
         # Get current ee position in world frame 
-        ee_idx = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_actor_handles[0], "gripperStator")
+        ee_idx = self.gym.find_actor_rigid_body_handle(
+            self.envs[0],
+            self.robot_actor_handles[0],
+            self._end_effector_body_name(),
+        )
         self.ee_pos_world = self.rigid_body_state.view(self.num_envs, -1, 13)[:,ee_idx,0:3].view(self.num_envs,3)
 
         # ee_position_error = torch.sum(torch.abs(ee_position_cmd_world - ee_pos_world), dim=1)
@@ -1735,15 +1864,24 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                 if self.cfg.control.control_type in ["P", "V"]:
                     print(f"PD gain of joint {name} were not defined, setting them to zero")
 
-        if len(self.cfg.commands.p_gains_arm):
-            self.p_gains[12:19] = torch.tensor(self.cfg.commands.p_gains_arm, device=self.device)
-        if len(self.cfg.commands.d_gains_arm):
-            self.d_gains[12:19] = torch.tensor(self.cfg.commands.d_gains_arm, device=self.device)
-        
-        if len(self.cfg.commands.p_gains_legs):
-            self.p_gains[:12] = torch.tensor(self.cfg.commands.p_gains_legs, device=self.device)
-        if len(self.cfg.commands.d_gains_legs):
-            self.d_gains[:12] = torch.tensor(self.cfg.commands.d_gains_legs, device=self.device)
+        if getattr(self, "has_custom_dof_layout", False):
+            for indices, p_values, d_values in (
+                (self.leg_dof_indices, self.cfg.commands.p_gains_legs, self.cfg.commands.d_gains_legs),
+                (self.wheel_dof_indices, self.cfg.commands.p_gains_wheels, self.cfg.commands.d_gains_wheels),
+                (self.arm_dof_indices, self.cfg.commands.p_gains_arm, self.cfg.commands.d_gains_arm),
+            ):
+                self.p_gains[indices] = torch.tensor(p_values, device=self.device)
+                self.d_gains[indices] = torch.tensor(d_values, device=self.device)
+        else:
+            if len(self.cfg.commands.p_gains_arm):
+                self.p_gains[12:19] = torch.tensor(self.cfg.commands.p_gains_arm, device=self.device)
+            if len(self.cfg.commands.d_gains_arm):
+                self.d_gains[12:19] = torch.tensor(self.cfg.commands.d_gains_arm, device=self.device)
+
+            if len(self.cfg.commands.p_gains_legs):
+                self.p_gains[:12] = torch.tensor(self.cfg.commands.p_gains_legs, device=self.device)
+            if len(self.cfg.commands.d_gains_legs):
+                self.d_gains[:12] = torch.tensor(self.cfg.commands.d_gains_legs, device=self.device)
 
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
@@ -1913,6 +2051,81 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             list(self.reward_scales.keys()) + ["lin_vel_raw", "ang_vel_raw", "lin_vel_residual", "ang_vel_residual",
                                                "ep_timesteps"]}
 
+    def _configure_dof_layout(self):
+        """Resolve robot-specific semantic groups without assuming URDF order."""
+        leg_names = getattr(self.cfg.asset, "leg_dof_names", None)
+        self.has_custom_dof_layout = leg_names is not None
+        if not self.has_custom_dof_layout:
+            return
+
+        self.dof_name_to_index = {
+            name: index for index, name in enumerate(self.dof_names)
+        }
+
+        def indices(group_name):
+            names = list(getattr(self.cfg.asset, group_name))
+            missing = [name for name in names if name not in self.dof_name_to_index]
+            if missing:
+                raise ValueError(
+                    f"Configured {group_name} entries are missing from URDF: {missing}"
+                )
+            return torch.tensor(
+                [self.dof_name_to_index[name] for name in names],
+                dtype=torch.long,
+                device=self.device,
+            )
+
+        self.leg_dof_indices = indices("leg_dof_names")
+        self.wheel_dof_indices = indices("wheel_dof_names")
+        self.arm_dof_indices = indices("arm_dof_names")
+        self.hip_dof_indices = indices("hip_dof_names")
+        zero_position_names = getattr(
+            self.cfg.asset, "zero_position_observation_dof_names", []
+        )
+        if zero_position_names:
+            missing = [
+                name for name in zero_position_names
+                if name not in self.dof_name_to_index
+            ]
+            if missing:
+                raise ValueError(
+                    "Configured zero-position observation DOFs are missing "
+                    f"from URDF: {missing}"
+                )
+            self.zero_position_observation_dof_indices = torch.tensor(
+                [self.dof_name_to_index[name] for name in zero_position_names],
+                dtype=torch.long,
+                device=self.device,
+            )
+        else:
+            self.zero_position_observation_dof_indices = torch.empty(
+                0, dtype=torch.long, device=self.device
+            )
+        self.motion_dof_indices = torch.cat(
+            (self.leg_dof_indices, self.wheel_dof_indices)
+        )
+
+        configured_names = (
+            list(self.cfg.asset.leg_dof_names)
+            + list(self.cfg.asset.wheel_dof_names)
+            + list(self.cfg.asset.arm_dof_names)
+        )
+        if len(configured_names) != len(set(configured_names)):
+            raise ValueError("Robot DOF groups contain duplicate joint names")
+        if set(configured_names) != set(self.dof_names):
+            missing = sorted(set(self.dof_names) - set(configured_names))
+            extra = sorted(set(configured_names) - set(self.dof_names))
+            raise ValueError(
+                f"Robot DOF groups do not cover the URDF exactly; missing={missing}, "
+                f"extra={extra}"
+            )
+        if self.num_actions != self.num_dof or self.num_actuated_dof != self.num_dof:
+            raise ValueError(
+                "The configured robot uses one policy action per URDF DOF: "
+                f"actions={self.num_actions}, actuated={self.num_actuated_dof}, "
+                f"URDF DOFs={self.num_dof}"
+            )
+
     def _create_envs(self):
 
         all_assets = []
@@ -1924,6 +2137,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         from wbc_compliance_gym.robots.b1_plus_z1 import B1PlusZ1
         from wbc_compliance_gym.robots.b1_plus_dismounted_z1 import B1PlusDismountedZ1
         from wbc_compliance_gym.robots.z1 import Z1
+        from wbc_compliance_gym.robots.zgwsarm import ZGWSArm
 
         robot_classes = {
             'go1': Go1,
@@ -1931,9 +2145,17 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             'b1_plus_z1': B1PlusZ1,
             # 'b1_plus_dismounted_z1': B1PlusDismountedZ1,
             'z1': Z1,
+            'zgwsarm': ZGWSArm,
         }
 
-        self.robot = robot_classes[self.cfg.robot.name](self)
+        try:
+            robot_class = robot_classes[self.cfg.robot.name]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown robot {self.cfg.robot.name!r}; available: "
+                f"{', '.join(sorted(robot_classes))}"
+            ) from exc
+        self.robot = robot_class(self)
         all_assets.append(self.robot)
         self.robot_asset, dof_props_asset, rigid_shape_props_asset = self.robot.initialize()
         self.dof_props_asset = dof_props_asset
@@ -1984,13 +2206,30 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
 
         # save body names from the asset
         body_names = self.gym.get_asset_rigid_body_names(self.robot_asset)
-        self.gripper_stator_index = [index for index, body_name in enumerate(body_names) if body_name == "link06"][0] # For random pushes
-        self.robot_base_index = [index for index, body_name in enumerate(body_names) if body_name == "base"][0] # For random pushes
+        end_effector_name = getattr(self.cfg.asset, "end_effector_name", "link06")
+        base_name = getattr(self.cfg.asset, "base_name", "base")
+        try:
+            self.gripper_stator_index = body_names.index(end_effector_name)
+            self.robot_base_index = body_names.index(base_name)
+        except ValueError as exc:
+            raise ValueError(
+                f"Configured base/EE links {base_name!r}/{end_effector_name!r} "
+                f"were not found in asset bodies: {body_names}"
+            ) from exc
                   
         self.dof_names = self.gym.get_asset_dof_names(self.robot_asset)
         self.num_bodies = len(body_names)
         self.num_dofs = len(self.dof_names)
-        feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
+        self._configure_dof_layout()
+        configured_feet = getattr(self.cfg.asset, "foot_names", None)
+        feet_names = (
+            list(configured_feet)
+            if configured_feet is not None
+            else [s for s in body_names if self.cfg.asset.foot_name in s]
+        )
+        missing_feet = [name for name in feet_names if name not in body_names]
+        if missing_feet:
+            raise ValueError(f"Configured foot links are missing: {missing_feet}")
         penalized_contact_names = []
         for name in self.cfg.asset.penalize_contacts_on:
             penalized_contact_names.extend([s for s in body_names if name in s])
@@ -2403,6 +2642,22 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         return depth_images
 
     def compute_energy(self):
+        if getattr(self, "has_custom_dof_layout", False):
+            torques = self.torques[:, self.leg_dof_indices]
+            joint_vels = self.dof_vel[:, self.leg_dof_indices]
+            gear_ratios = torch.tensor(
+                [
+                    1.0 / 1.5 if "KNEE" in name else 1.0
+                    for name in self.cfg.asset.leg_dof_names
+                ],
+                device=self.device,
+            )
+            power_joule = torch.sum((torques * gear_ratios) ** 2 * 0.07, dim=1)
+            power_mechanical = torch.sum(
+                torch.clip(torques * joint_vels, -3, 10000), dim=1
+            )
+            return power_joule + power_mechanical + 42.0
+
         torques = self.torques[:, :12]
         joint_vels = self.dof_vel[:, :12]
 

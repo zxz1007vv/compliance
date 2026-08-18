@@ -211,8 +211,16 @@ class JointPositionSensor(Sensor):
             self.env.dof_pos[:, : self.env.num_actuated_dof]
             - self.env.default_dof_pos[:, : self.env.num_actuated_dof]
         ) * self.env.cfg.obs_scales.dof_pos
+        zero_indices = getattr(
+            self.env, "zero_position_observation_dof_indices", None
+        )
+        if zero_indices is not None and zero_indices.numel() > 0:
+            obs[:, zero_indices] = 0.0
         if self.env.cfg.commands.control_only_z1:
-            obs[:, :12] = 0.0
+            if getattr(self.env, "has_custom_dof_layout", False):
+                obs[:, self.env.motion_dof_indices] = 0.0
+            else:
+                obs[:, :12] = 0.0
         return obs
 
     def get_noise_vec(self):
@@ -222,8 +230,16 @@ class JointPositionSensor(Sensor):
             * self.env.cfg.noise.noise_level
             * self.env.cfg.obs_scales.dof_pos
         )
+        zero_indices = getattr(
+            self.env, "zero_position_observation_dof_indices", None
+        )
+        if zero_indices is not None and zero_indices.numel() > 0:
+            noise_vec[zero_indices] = 0.0
         if self.env.cfg.commands.control_only_z1:
-            noise_vec[:12] = 0.0
+            if getattr(self.env, "has_custom_dof_layout", False):
+                noise_vec[self.env.motion_dof_indices] = 0.0
+            else:
+                noise_vec[:12] = 0.0
         return noise_vec
 
     def get_dim(self):
@@ -242,7 +258,10 @@ class JointVelocitySensor(Sensor):
             * self.env.cfg.obs_scales.dof_vel
         )
         if self.env.cfg.commands.control_only_z1:
-            obs[:, :12] = 0.0
+            if getattr(self.env, "has_custom_dof_layout", False):
+                obs[:, self.env.motion_dof_indices] = 0.0
+            else:
+                obs[:, :12] = 0.0
         return obs
 
     def get_noise_vec(self):
@@ -253,7 +272,10 @@ class JointVelocitySensor(Sensor):
             * self.env.cfg.obs_scales.dof_vel
         )
         if self.env.cfg.commands.control_only_z1:
-            noise_vec[:12] = 0.0
+            if getattr(self.env, "has_custom_dof_layout", False):
+                noise_vec[self.env.motion_dof_indices] = 0.0
+            else:
+                noise_vec[:12] = 0.0
         return noise_vec
 
     def get_dim(self):
@@ -269,7 +291,10 @@ class JointPositionTargetSensor(Sensor):
     def get_observation(self, env_ids=None):
         obs = self.env.joint_pos_target
         if self.env.cfg.commands.control_only_z1:
-            obs[:, :12] = 0.0
+            if getattr(self.env, "has_custom_dof_layout", False):
+                obs[:, self.env.motion_dof_indices] = 0.0
+            else:
+                obs[:, :12] = 0.0
         return obs
 
     def get_noise_vec(self):

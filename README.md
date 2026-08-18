@@ -1,14 +1,15 @@
 # WBC Compliance Gym
 
-本仓库用于在 Isaac Gym 中训练和评估足式机器人全身柔顺控制策略。当前正式任务是
-Unitree B1 搭载 Z1 机械臂的 locomotion + position/force compliance 控制，代码来源于
+本仓库用于在 Isaac Gym 中训练和评估足式机器人全身柔顺控制策略。当前提供
+Unitree B1+Z1 和 ZGWSARM 轮足四足+机械臂两套独立任务，复用 locomotion +
+position/force compliance 控制框架。代码来源于
 论文 [Learning Force Control for Legged Manipulation](https://arxiv.org/abs/2405.01402)，
 并参考了 legged_gym、rsl_rl 以及
 [HIMLoco-for-Go2W](https://github.com/TrackinBIT/HIMLoco-for-Go2W) 的 TaskRegistry 组织方式。
 
 ## 1. 当前约定
 
-- 当前注册任务：`b1_z1_ik`
+- 当前注册任务：`b1_z1_ik`、`zgwsarm_compliance`
 - 仿真与任务包：`wbc_compliance_gym`
 - 强化学习包：`wbc_compliance_rl`
 - 正式实验目录：`logs/<task>/<timestamp>_<run-name>/`
@@ -160,9 +161,10 @@ python scripts/play.py --list-tasks
 
 ```text
 b1_z1_ik
+zgwsarm_compliance
 ```
 
-任务名称统一使用 `b1_z1_ik`，不是 `z1_b1_ik`。未知任务会直接报错并列出可用任务。
+任务名称必须显式使用注册名。未知任务会直接报错并列出可用任务。
 
 ## 6. 训练命令
 
@@ -170,6 +172,8 @@ b1_z1_ik
 
 ```bash
 python scripts/train.py --task b1_z1_ik
+# ZGWSARM
+python scripts/train.py --task zgwsarm_compliance
 ```
 
 `--task` 是必填参数，避免多机器人环境下误用默认任务。直接运行
@@ -223,6 +227,8 @@ python scripts/train.py \
 
 ```bash
 python scripts/play.py --task b1_z1_ik --checkpoint latest
+# ZGWSARM
+python scripts/play.py --task zgwsarm_compliance --checkpoint latest
 ```
 
 `play.py` 不设置默认任务。直接运行 `python scripts/play.py` 会提示必须提供
@@ -363,6 +369,49 @@ resources/robots/b1_z1/
 旧 run 的 `config.json` 仍可能记录 `resources/robots/b1/...`。加载器会在内存中自动迁移到
 `resources/robots/b1_z1/...`，不会修改历史日志文件。
 
+ZGWSARM 资源位于：
+
+```text
+resources/robots/zgwsarm/
+├── urdf/zgwsarm.urdf       # Isaac Gym 训练资产，BASE_LINK 为浮动根
+├── meshes/                 # STL，仅使用仓库内相对路径
+├── zgwsarm.xml             # 原模型的 MuJoCo 版本
+├── scene_terrain.xml
+└── *.png                   # MuJoCo height-field 依赖
+```
+
+ZGWSARM 的实际 Isaac Gym DOF 顺序是 `FR(FAR) 4 + FL(FBL) 4 + RR(RAR) 4 +
+RL(RBL) 4 + arm 6`，每条轮足链依次为 `ABAD/HIP/KNEE/FOOT`。策略 action
+严格使用这一 22 维顺序；末端为 `ROBOT_ARM_LINK7`，base 为 `BASE_LINK`。该任务的
+维度为 observation=96、privileged observation=16、history=960、action=22、command=23。
+
+关键入口：
+
+| 内容 | 路径 |
+|---|---|
+| Asset loader | `wbc_compliance_gym/robots/zgwsarm.py` |
+| 机器人名称、DOF 分组、默认姿态、PD | `wbc_compliance_gym/robots/configs/zgwsarm.py` |
+| 训练/PPO/Play 配置 | `wbc_compliance_gym/envs/zgwsarm_compliance/zgwsarm_compliance_config.py` |
+| 环境与轮力矩控制 | `wbc_compliance_gym/envs/zgwsarm_compliance/zgwsarm_compliance_env.py` |
+| 独立 reward 索引适配 | `wbc_compliance_gym/rewards/zgwsarm.py` |
+
+ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz 物理仿真和
+100 Hz 策略频率。出生高度为 `0.55 m`，目标工作高度为 `0.54 m`。ABAD/HIP/KNEE
+使用位置 PD，增益分别为 `90/1`、`120/1`、`120/1`；轮关节不跟踪角度，使用
+`torque = 15 * action - 0.2 * wheel_velocity` 并按 URDF 裁剪到 `±28 N·m`。
+轮角不进入策略关节位置观测，真实轮速仍保留。
+
+ZGWSARM 原地 Position/Force/Binary 测试：
+
+```bash
+python scripts/play.py --task zgwsarm_compliance --checkpoint latest --control-mode position
+python scripts/play.py --task zgwsarm_compliance --checkpoint latest --control-mode force --force-amplitude 70
+python scripts/play.py --task zgwsarm_compliance --checkpoint latest --control-mode binary --force-amplitude 70
+```
+
+Play hook 会把底盘速度命令固定为零。`config.json`、checkpoint、续训和 TorchScript
+policy 导出仍使用通用格式，且 play 会拒绝 task 与 run 不匹配的组合。
+
 ## 10. 增加新机器人/任务
 
 例如增加 `b2_z2_compliance`：
@@ -392,5 +441,3 @@ resources/robots/b1_z1/
 
 任务特有的 play 覆盖应放在该任务的 `*_config.py` 中，并通过 `play_cfg_hook` 注册；不要把
 新机器人的参数硬编码回 `scripts/play.py`。
-
-

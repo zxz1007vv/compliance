@@ -287,8 +287,6 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     # Cfg.domain_rand.randomize_tile_roughness = True
     # Cfg.domain_rand.tile_roughness_range = [0.0, 0.0]
     # Cfg.domain_rand.ground_friction_range = [2.0, 2.01]
-    # Cfg.robot.name = "b1_plus_dismounted_z1"
-
     # Cfg.noise.noise_level = 0
 
     if task_spec.play_cfg_hook is not None:

@@ -70,12 +70,27 @@ def config_zgwsarm(cfg):
         "ABAD_LINK",
         "HIP_LINK",
         "KNEE_LINK",
+        "base_connector_link",
+        "ROBOT_ARM_LINK0",
+        "ROBOT_ARM_LINK1",
         "ROBOT_ARM_LINK2",
         "ROBOT_ARM_LINK3",
         "ROBOT_ARM_LINK4",
         "ROBOT_ARM_LINK5",
+        "ROBOT_ARM_LINK6",
+        "ROBOT_ARM_LINK7",
     ]
-    cfg.asset.terminate_after_contacts_on = ["BASE_LINK"]
+    # Every collision shape except the four wheel/foot links is a failure
+    # contact for this task.  End-effector forces are applied explicitly and
+    # therefore do not require the arm to touch the terrain.
+    cfg.asset.terminate_after_contacts_on = [
+        "BASE_LINK",
+        "ABAD_LINK",
+        "HIP_LINK",
+        "KNEE_LINK",
+        "base_connector_link",
+        "ROBOT_ARM_LINK",
+    ]
 
     cfg.init_state.pos = [0.0, 0.0, 0.55]
     cfg.init_state.default_joint_angles = {
@@ -124,6 +139,20 @@ def config_zgwsarm(cfg):
     cfg.control.control_type = "P"
     cfg.control.action_scale = 0.25
     cfg.control.hip_scale_reduction = 1.0
+    # ZGWSARM's arm already receives the global 0.25 rad action scale.  The
+    # inherited B1+Z1 value of 2.0 enlarged arm requests and drove the policy
+    # into hard-limit/slew-rate saturation.
+    cfg.control.arm_scale_reduction = 1.0
+    # Position-drive targets are updated every 2 ms physics step and may not
+    # advance faster than the corresponding URDF velocity limit.
+    cfg.control.arm_target_velocity_limit_scale = 1.0
+    # Reset isolated pathological states before sending them through another
+    # PhysX articulation solve. The margin avoids reacting to solver tolerance.
+    cfg.control.safety_dof_velocity_ratio = 2.0
+    cfg.control.safety_dof_position_margin = 0.05
+    # Foot impacts are excluded; large contacts on the base, legs, or arm are
+    # treated as trapped-articulation states and reset before the next solve.
+    cfg.control.safety_nonfoot_contact_force = 5000.0
     cfg.control.decimation = 5
     cfg.sim.dt = 0.002
     # The shared delay buffer advances once per physics step.  Four buffered
@@ -145,6 +174,12 @@ def config_zgwsarm(cfg):
     cfg.commands.command_base_height = 0.54
 
     cfg.rewards.base_height_target = 0.54
+    # Semantic failure contacts use a low, debounced threshold; the 5000 N
+    # control threshold above remains an independent solver protection.
+    cfg.rewards.terminal_contact_force = 10.0
+    cfg.rewards.terminal_contact_debounce_steps = 2
+    cfg.rewards.stand_still_command_threshold = 0.10
+    cfg.rewards.soft_action_limit = 3.0
     return cfg
 
 

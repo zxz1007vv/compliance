@@ -208,7 +208,7 @@ NaN/Inf 时，可先缩小环境数量并开启同步检查：
 COMPLIANCE_CUDA_DEBUG=1 \
 COMPLIANCE_CUDA_DEBUG_INTERVAL=100 \
 CUDA_LAUNCH_BLOCKING=1 \
-python scripts/train.py --task b1_z1_ik --num-envs 512
+python scripts/train.py --task zgwsarm_compliance --num-envs 512
 ```
 
 该模式会打印最终使用的环境数和 PhysX contact buffer 配置，在每个物理子步检查
@@ -223,9 +223,12 @@ action、torque、force、DOF、root/body state 和 contact force，并在首次
 完整 tensor 检查和 CUDA 同步会明显降低训练速度，仅在复现问题时开启。正常训练
 不要设置 `COMPLIANCE_CUDA_DEBUG`。
 
-B1+Z1 任务还启用了三项常驻保护：位置目标被夹紧到 URDF 硬限位；
-`asset.self_collisions = 1`（Isaac Gym 中 `1` 表示禁用自碰撞）；GPU contact pair
-容量提升为 `2 ** 24`。这些设置在不开启 debug 时同样生效。
+ZGWSARM 任务还启用了常驻保护：腿和机械臂的位置目标被夹紧到 URDF 硬限位，
+机械臂目标的逐物理步变化量受 URDF 速度限制，reset 后 position-drive target 与随机
+初始关节位置对齐，连续轮关节不参与位置夹紧；`asset.self_collisions = 1`（Isaac Gym
+中 `1` 表示禁用自碰撞）；有限位关节越界超过 `0.05 rad` 或关节速度超过 URDF
+限制两倍时只重置对应环境，非足端刚体接触力超过 `5000 N` 时也会重置对应环境；
+GPU contact pair 容量提升为 `2 ** 24`。这些设置在不开启 debug 时同样生效。
 
 ### 6.4 从该任务最新 run 续训
 
@@ -385,9 +388,7 @@ resources/robots/b1_z1/
 ├── urdf/
 │   ├── b1.urdf
 │   ├── z1.urdf
-│   ├── b1_plus_z1.urdf
-│   ├── b1_plus_rigid_z1.urdf
-│   └── b1_plus_dismounted_z1.urdf
+│   └── b1_plus_z1.urdf
 ├── meshes/
 │   └── z1/
 └── xacro/

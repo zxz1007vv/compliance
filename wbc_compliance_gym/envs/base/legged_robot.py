@@ -95,6 +95,12 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         cuda_debugger = self._cuda_debugger
         debug_step = int(getattr(self, "common_step_counter", 0))
         if cuda_debugger is not None:
+            cuda_debugger.report_action_diagnostics(
+                self.actions,
+                self.dof_names[: self.num_actions],
+                clip_actions,
+                debug_step,
+            )
             cuda_debugger.check_tensors(
                 "clipped_actions",
                 {"actions": self.actions},
@@ -177,7 +183,12 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                     requested_targets=getattr(
                         self, "_cuda_debug_requested_joint_pos_target", None
                     ),
-                    clamped_targets=self.joint_pos_target,
+                    hard_clamped_targets=getattr(
+                        self,
+                        "_cuda_debug_hard_clamped_joint_pos_target",
+                        self.joint_pos_target,
+                    ),
+                    applied_targets=self.joint_pos_target,
                     hard_limits=self.dof_pos_hard_limits,
                     velocity_limits=self.dof_vel_limits,
                     dof_names=self.dof_names,
@@ -223,6 +234,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                     self.body_names,
                     debug_step,
                     o,
+                    ignored_body_indices=self.feet_indices,
                 )
 
         if cuda_debugger is None:
@@ -964,19 +976,15 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                     raise Exception("Drive mode not found!")
                     
 
-            # Reward-only soft limits are derived after all hard URDF limits
-            # have been captured. The calf offset must be applied once, not
-            # once per DOF (which previously moved the bound close to -2*pi).
-            for i in range(min(12, self.num_dof)):
-                if i in (2, 5):
-                    continue
-                m = (self.dof_pos_limits[i, 0] + self.dof_pos_limits[i, 1]) / 2
-                r = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
-                self.dof_pos_limits[i, 0] = m - 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
-                self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
-            for calf_index in (2, 5):
-                if calf_index < self.num_dof:
-                    self.dof_pos_limits[calf_index, 0] -= 0.25
+                # soft limits for legs only
+                if i < 12 and i not in [2, 5]:
+                    m = (self.dof_pos_limits[i, 0] + self.dof_pos_limits[i, 1]) / 2
+                    r = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
+                    self.dof_pos_limits[i, 0] = m - 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+                    self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+                # Increase the minimum angle of the calf angle of the front legs
+                self.dof_pos_limits[2, 0] -= 0.25
+                self.dof_pos_limits[5, 0] -= 0.25
 
             self.dof_has_position_limits = (
                 torch.isfinite(self.dof_pos_hard_limits).all(dim=1)
@@ -1088,6 +1096,9 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             torch.isfinite(self.dof_pos_hard_limits).all(dim=1)
             & (self.dof_pos_hard_limits[:, 1] > self.dof_pos_hard_limits[:, 0])
         )
+        # ZGWSARM's wheel joints use very wide URDF bounds as continuous-joint
+        # placeholders. They must not be treated as position-controlled joints.
+        self.dof_has_position_limits[self.wheel_dof_indices] = False
         self.dof_limited_indices = self.dof_has_position_limits.nonzero(
             as_tuple=False
         ).flatten()
@@ -1280,8 +1291,6 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if self.cfg.commands.sample_feasible_commands:
             self.joint_pos_target[:, :self.num_actuated_dof] = torch.tensor(self.target_joint_values, device=self.device)
 
-        self._clamp_joint_pos_target_to_hard_limits()
-
         # actuator model
         dof_pos_error = (self.dof_pos - self.joint_pos_target)
 
@@ -1323,7 +1332,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
     def _clamp_joint_pos_target_to_hard_limits(self):
         """Keep position-drive targets inside finite URDF joint limits."""
         limited = self.dof_limited_indices
-        if self._cuda_debugger is not None:
+        if getattr(self, "_cuda_debugger", None) is not None:
             self._cuda_debug_requested_joint_pos_target = self.joint_pos_target.clone()
         if limited.numel() == 0:
             return
@@ -1357,9 +1366,13 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                 ),
                 self.dof_pos_limits[self.arm_dof_indices, 0],
             )
+            # Custom robots may randomize position-driven joints on reset.
+            # Start their drive targets at the actual reset pose to avoid a
+            # one-step impulse back toward the nominal pose.
+            self.joint_pos_target[env_ids] = self.dof_pos[env_ids]
         else:
             self.dof_pos[env_ids, 12:18] += torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
-        self.joint_pos_target[env_ids] = self.default_dof_pos
+            self.joint_pos_target[env_ids] = self.default_dof_pos
         # if len(self.default_dof_pos_RL):
         #     self.dof_pos[env_ids, :12] = self.default_dof_pos_RL * torch_rand_float(0.9, 1.1, (len(env_ids), 12), device=self.device)
 
@@ -2274,7 +2287,6 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         from wbc_compliance_gym.robots.go1 import Go1
         from wbc_compliance_gym.robots.b1 import B1
         from wbc_compliance_gym.robots.b1_plus_z1 import B1PlusZ1
-        from wbc_compliance_gym.robots.b1_plus_dismounted_z1 import B1PlusDismountedZ1
         from wbc_compliance_gym.robots.z1 import Z1
         from wbc_compliance_gym.robots.zgwsarm import ZGWSArm
 
@@ -2282,7 +2294,6 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             'go1': Go1,
             'b1': B1,
             'b1_plus_z1': B1PlusZ1,
-            # 'b1_plus_dismounted_z1': B1PlusDismountedZ1,
             'z1': Z1,
             'zgwsarm': ZGWSArm,
         }

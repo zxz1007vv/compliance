@@ -12,6 +12,7 @@ from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
     ZGWSARMComplianceCfg,
     ZGWSARMComplianceCfgPPO,
+    configure_zgwsarm_compliance_play,
 )
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_env import (
     ZGWSARMComplianceEnv,
@@ -148,7 +149,18 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.002, cfg.sim.dt)
         self.assertEqual(5, cfg.control.decimation)
         self.assertEqual(0.01, cfg.sim.dt * cfg.control.decimation)
+        self.assertEqual(2048, cfg.env.num_envs)
+        self.assertEqual(4.0, cfg.normalization.clip_actions)
+        self.assertEqual(1.0, cfg.control.arm_scale_reduction)
+        self.assertEqual(1.0, cfg.control.arm_target_velocity_limit_scale)
+        self.assertEqual(2.0, cfg.control.safety_dof_velocity_ratio)
+        self.assertEqual(0.05, cfg.control.safety_dof_position_margin)
+        self.assertEqual(5000.0, cfg.control.safety_nonfoot_contact_force)
+        self.assertEqual(10.0, cfg.rewards.terminal_contact_force)
+        self.assertEqual(2, cfg.rewards.terminal_contact_debounce_steps)
         self.assertEqual(4, cfg.domain_rand.lag_timesteps)
+        self.assertEqual(2 ** 23, cfg.sim.physx.max_gpu_contact_pairs)
+        self.assertEqual(3, cfg.sim.physx.default_buffer_size_multiplier)
         self.assertEqual(0, cfg.asset.default_dof_drive_mode)
         self.assertFalse(cfg.asset.replace_cylinder_with_capsule)
         self.assertEqual(1, cfg.asset.self_collisions)
@@ -156,6 +168,47 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual([1.0, 1.0, 1.0] * 4, cfg.commands.d_gains_legs)
         self.assertEqual([60.0] * 4, cfg.commands.p_gains_wheels)
         self.assertEqual([0.2] * 4, cfg.commands.d_gains_wheels)
+        self.assertFalse(cfg.rewards.only_positive_rewards)
+        self.assertEqual(-10.0, cfg.reward_scales.termination)
+        self.assertEqual(-5.0, cfg.reward_scales.orientation)
+        self.assertEqual(-30.0, cfg.reward_scales.base_height)
+        self.assertEqual(0.0, cfg.reward_scales.dof_pos)
+        self.assertEqual([-1.0, 1.0], cfg.commands.lin_vel_x)
+        self.assertEqual([-1.5, 1.5], cfg.commands.ang_vel_yaw)
+        self.assertGreater(cfg.reward_scales.tracking_lin_vel, 0.0)
+        self.assertGreater(cfg.reward_scales.tracking_ang_vel_yaw, 0.0)
+        self.assertEqual(0.0, cfg.reward_scales.tracking_contacts_shaped_force)
+        self.assertEqual(0.0, cfg.reward_scales.tracking_contacts_shaped_vel)
+        self.assertEqual(0.0, cfg.reward_scales.feet_clearance_cmd)
+        self.assertIn("BASE_LINK", cfg.asset.terminate_after_contacts_on)
+        self.assertIn("ABAD_LINK", cfg.asset.terminate_after_contacts_on)
+        self.assertIn("HIP_LINK", cfg.asset.terminate_after_contacts_on)
+        self.assertIn("KNEE_LINK", cfg.asset.terminate_after_contacts_on)
+        self.assertIn("ROBOT_ARM_LINK", cfg.asset.terminate_after_contacts_on)
+        self.assertEqual([-10.0, 10.0], cfg.domain_rand.max_push_force_xyz_gripper)
+        self.assertEqual("position", cfg.commands.hybrid_mode)
+
+    def test_play_disables_training_curriculum_but_keeps_explicit_force(self):
+        cfg = ZGWSARMComplianceCfg()
+        configure_zgwsarm_compliance_play(
+            cfg, control_mode="force", force_amplitude=30.0
+        )
+
+        self.assertFalse(cfg.domain_rand.zgwsarm_curriculum_enabled)
+        self.assertEqual([-30.0, 30.0], cfg.domain_rand.max_push_force_xyz_gripper)
+        self.assertEqual(
+            [-30.0, 30.0], cfg.domain_rand.max_push_force_xyz_gripper_freed
+        )
+        self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_x)
+
+    def test_play_without_force_override_uses_final_curriculum_load(self):
+        cfg = ZGWSARMComplianceCfg()
+        configure_zgwsarm_compliance_play(cfg, control_mode="force")
+
+        self.assertEqual([-70.0, 70.0], cfg.domain_rand.max_push_force_xyz_gripper)
+        self.assertEqual(
+            [-70.0, 70.0], cfg.domain_rand.max_push_force_xyz_gripper_freed
+        )
 
     def test_task_and_reward_registration(self):
         registry = register_tasks()
@@ -192,13 +245,16 @@ class ZGWSARMContractTests(unittest.TestCase):
                 control_type="P",
                 action_scale=0.25,
                 hip_scale_reduction=1.0,
-                arm_scale_reduction=2.0,
+                arm_scale_reduction=1.0,
+                arm_target_velocity_limit_scale=1.0,
             ),
+            sim=SimpleNamespace(dt=0.002),
             domain_rand=SimpleNamespace(randomize_lag_timesteps=False),
         )
         env.default_dof_pos = torch.zeros(1, 22)
         env.dof_pos = torch.zeros(1, 22)
         env.dof_vel = torch.zeros(1, 22)
+        env.joint_pos_target = torch.zeros(1, 22)
         env.p_gains = torch.zeros(22)
         env.d_gains = torch.zeros(22)
         env.p_gains[env.leg_dof_indices] = torch.tensor(
@@ -218,11 +274,24 @@ class ZGWSARMContractTests(unittest.TestCase):
         env.torque_limits = torch.tensor(
             [180.0, 180.0, 180.0, 28.0] * 4 + [100.0] * 6
         )
+        env.dof_vel_limits = torch.tensor(
+            [16.75, 16.75, 16.75, 110.0] * 4
+            + [10.0, 10.0, 10.0, 10.0, 10.0, 5.0]
+        )
+        env.dof_pos_hard_limits = torch.tensor(
+            [[-100.0, 100.0]] * env.num_dof
+        )
+        env.dof_pos_hard_limits[17] = torch.tensor([-1.0, 1.0])
+        env.dof_limited_indices = torch.tensor(
+            [i for i in range(env.num_dof) if i not in env.wheel_dof_indices]
+        )
+        env._cuda_debugger = None
 
         actions = torch.zeros(1, 22)
         actions[0, 0] = 1.0
         actions[0, 3] = 2.0
         actions[0, 16] = 1.0
+        actions[0, 17] = 10.0
         env.dof_vel[0, 3] = 10.0
         env.dof_pos[0, 7] = 123.0
         env._compute_torques(actions)
@@ -230,7 +299,191 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertAlmostEqual(22.5, env.torques[0, 0].item())
         self.assertAlmostEqual(28.0, env.torques[0, 3].item())
         self.assertAlmostEqual(0.0, env.torques[0, 7].item())
-        self.assertAlmostEqual(0.5, env.joint_pos_target[0, 16].item())
+        self.assertAlmostEqual(0.02, env.joint_pos_target[0, 16].item())
+        self.assertAlmostEqual(0.02, env.joint_pos_target[0, 17].item())
+
+    def test_progressive_randomization_reaches_midpoint(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.common_step_counter = 75000
+        env.cfg = SimpleNamespace(
+            domain_rand=SimpleNamespace(
+                zgwsarm_curriculum_enabled=True,
+                zgwsarm_force_mode_start_step=25000,
+                zgwsarm_curriculum_start_step=25000,
+                zgwsarm_curriculum_end_step=125000,
+                zgwsarm_force_initial=10.0,
+                zgwsarm_force_final=70.0,
+                zgwsarm_push_velocity_initial=0.0,
+                zgwsarm_push_velocity_final=0.8,
+                zgwsarm_gravity_initial=0.0,
+                zgwsarm_gravity_final=0.5,
+                zgwsarm_motor_strength_initial=[0.98, 1.02],
+                zgwsarm_motor_strength_final=[0.9, 1.1],
+                zgwsarm_Kd_factor_initial=[0.9, 1.1],
+                zgwsarm_Kd_factor_final=[0.5, 1.5],
+            ),
+            commands=SimpleNamespace(hybrid_mode="position"),
+        )
+
+        env._update_training_curriculum()
+
+        domain_rand = env.cfg.domain_rand
+        self.assertEqual([-40.0, 40.0], domain_rand.max_push_force_xyz_gripper)
+        self.assertAlmostEqual(0.4, domain_rand.max_push_vel_xy)
+        self.assertEqual([-0.25, 0.25], domain_rand.gravity_range)
+        self.assertAlmostEqual(0.94, domain_rand.motor_strength_range[0])
+        self.assertAlmostEqual(1.06, domain_rand.motor_strength_range[1])
+        self.assertAlmostEqual(0.7, domain_rand.Kd_factor_range[0])
+        self.assertAlmostEqual(1.3, domain_rand.Kd_factor_range[1])
+        self.assertEqual("binary", env.cfg.commands.hybrid_mode)
+
+    def test_force_mode_is_not_enabled_during_initial_locomotion_stage(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.common_step_counter = 24999
+        env.cfg = SimpleNamespace(
+            domain_rand=SimpleNamespace(
+                zgwsarm_curriculum_enabled=True,
+                zgwsarm_force_mode_start_step=25000,
+                zgwsarm_curriculum_start_step=25000,
+                zgwsarm_curriculum_end_step=125000,
+                zgwsarm_force_initial=10.0,
+                zgwsarm_force_final=70.0,
+                zgwsarm_push_velocity_initial=0.0,
+                zgwsarm_push_velocity_final=0.8,
+                zgwsarm_gravity_initial=0.0,
+                zgwsarm_gravity_final=0.5,
+                zgwsarm_motor_strength_initial=[0.98, 1.02],
+                zgwsarm_motor_strength_final=[0.9, 1.1],
+                zgwsarm_Kd_factor_initial=[0.9, 1.1],
+                zgwsarm_Kd_factor_final=[0.5, 1.5],
+            ),
+            commands=SimpleNamespace(hybrid_mode="binary"),
+        )
+
+        env._update_training_curriculum()
+
+        self.assertEqual("position", env.cfg.commands.hybrid_mode)
+        self.assertEqual(
+            [-10.0, 10.0],
+            env.cfg.domain_rand.max_push_force_xyz_gripper,
+        )
+
+    def test_pathological_states_are_selected_for_reset(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.device = "cpu"
+        env.num_bodies = 3
+        env.feet_indices = torch.tensor([2])
+        env.cfg = SimpleNamespace(
+            control=SimpleNamespace(
+                safety_dof_velocity_ratio=2.0,
+                safety_dof_position_margin=0.05,
+                safety_nonfoot_contact_force=5000.0,
+            )
+        )
+        env.dof_vel = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 20.1, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ]
+        )
+        env.dof_vel_limits = torch.tensor([5.0, 10.0, 100.0])
+        env.dof_pos = torch.tensor(
+            [
+                [0.0, 0.0, 500.0],
+                [0.0, 0.0, -500.0],
+                [1.06, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ]
+        )
+        env.dof_pos_hard_limits = torch.tensor(
+            [[-1.0, 1.0], [-2.0, 2.0], [-99999.0, 99999.0]]
+        )
+        env.dof_limited_indices = torch.tensor([0, 1])
+        env.contact_forces = torch.zeros(4, 3, 3)
+        env.contact_forces[0, 2, 0] = 10000.0
+        env.contact_forces[3, 1, 0] = 5000.1
+
+        velocity_reset, position_reset, contact_reset = env._safety_reset_masks()
+
+        self.assertTrue(torch.equal(
+            velocity_reset, torch.tensor([False, True, False, False])
+        ))
+        self.assertTrue(torch.equal(
+            position_reset, torch.tensor([False, False, True, False])
+        ))
+        self.assertTrue(torch.equal(
+            contact_reset, torch.tensor([False, False, False, True])
+        ))
+
+    def test_semantic_contacts_are_low_force_and_debounced(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.device = "cpu"
+        env.num_envs = 3
+        env.termination_contact_indices = torch.tensor([0, 1])
+        env.cfg = SimpleNamespace(
+            rewards=SimpleNamespace(
+                terminal_contact_force=10.0,
+                terminal_contact_debounce_steps=2,
+            )
+        )
+        env.contact_forces = torch.zeros(3, 3, 3)
+        env.contact_forces[0, 0, 2] = 11.0
+        env.contact_forces[1, 2, 2] = 1000.0
+
+        first = env._semantic_contact_reset_mask()
+        second = env._semantic_contact_reset_mask()
+        env.contact_forces.zero_()
+        cleared = env._semantic_contact_reset_mask()
+
+        self.assertTrue(torch.equal(first, torch.tensor([False, False, False])))
+        self.assertTrue(torch.equal(second, torch.tensor([True, False, False])))
+        self.assertTrue(torch.equal(cleared, torch.tensor([False, False, False])))
+
+    def test_base_height_is_measured_relative_to_local_terrain(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.cfg = SimpleNamespace(
+            terrain=SimpleNamespace(mesh_type="boxes_tm")
+        )
+        env.num_envs = 2
+        env.base_pos = torch.tensor(
+            [[1.0, 2.0, 0.70], [3.0, 4.0, 1.10]], dtype=torch.float
+        )
+        env.get_heights_points = lambda positions: torch.tensor([0.20, 0.55])
+
+        torch.testing.assert_close(
+            env.base_height_above_terrain(), torch.tensor([0.50, 0.55])
+        )
+
+    def test_stance_posture_reward_only_applies_to_zero_velocity_commands(self):
+        env = SimpleNamespace(
+            leg_dof_indices=torch.arange(12),
+            commands=torch.tensor(
+                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float
+            ),
+            dof_pos=torch.ones(2, 12),
+            default_dof_pos=torch.zeros(1, 12),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(stand_still_command_threshold=0.1)
+            ),
+        )
+        rewards = ZGWSARMRewards(env)
+
+        value = rewards._reward_stance_posture()
+
+        torch.testing.assert_close(value, torch.tensor([12.0, 0.0]))
+
+    def test_termination_reward_excludes_timeouts(self):
+        env = SimpleNamespace(
+            reset_buf=torch.tensor([True, True, False]),
+            time_out_buf=torch.tensor([False, True, False]),
+        )
+        rewards = ZGWSARMRewards(env)
+
+        torch.testing.assert_close(
+            rewards._reward_termination(), torch.tensor([1.0, 0.0, 0.0])
+        )
 
     def test_wheel_position_observation_is_zero_without_mutating_state(self):
         wheel_indices = torch.tensor([3, 7, 11, 15])
@@ -280,6 +533,16 @@ class ZGWSARMContractTests(unittest.TestCase):
             self.assertIn("ROBOT_ARM_LINK7", body_names)
             for foot_name in FOOT_LINK_NAMES:
                 self.assertIn(foot_name, body_names)
+            cfg = ZGWSARMComplianceCfg()
+            termination_names = {
+                body_name
+                for pattern in cfg.asset.terminate_after_contacts_on
+                for body_name in body_names
+                if pattern in body_name
+            }
+            self.assertEqual(
+                set(body_names) - set(FOOT_LINK_NAMES), termination_names
+            )
         finally:
             gym.destroy_sim(sim)
 

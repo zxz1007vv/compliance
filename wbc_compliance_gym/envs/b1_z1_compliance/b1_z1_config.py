@@ -27,8 +27,6 @@ def configure_b1_z1_ik(cfg=None):
     cfg.commands.control_ee_ori_only_yaw = False
 
     # cfg.env.num_envs = 512   #默认4000，崩溃从小的执行
-    # B1+Z1 creates substantially more contacts than the base quadruped task.
-    cfg.sim.physx.max_gpu_contact_pairs = 2 ** 24
 
     # RunnerArgs.resume = False
     # RunnerArgs.resume_path = "improbableai/b1-z1-IK/gtkntvpq"
@@ -515,10 +513,6 @@ def configure_b1_z1_ik(cfg=None):
     cfg.commands.teleop_occulus = False
 
     cfg.asset.fix_base_link = False
-    # PhysX Preview 4's GPU articulation solver can fail on pathological
-    # B1+Z1 self-contact states. Isaac Gym uses 1 to disable self-collision.
-    # Keep it disabled while the URDF collision filtering is audited.
-    cfg.asset.self_collisions = 1
     cfg.asset.penalize_contacts_on = ["thigh", "calf", "link02", "link03", "link06", "hip"]
     cfg.asset.terminate_after_contacts_on = ["gripperMover"]
 

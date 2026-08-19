@@ -65,6 +65,49 @@ class ZGWSARMRewards(B1Z1Rewards):
         reward = torch.exp(-15.0 * self._ee_position_error_squared())
         return reward * (1 - self.env.force_or_position_control)
 
+    def _reward_termination(self):
+        """Penalize true failures while excluding normal episode timeouts."""
+        return (
+            self.env.reset_buf.bool() & ~self.env.time_out_buf.bool()
+        ).float()
+
+    def _reward_orientation(self):
+        """Penalize roll/pitch without constraining commanded yaw motion."""
+        return torch.sum(torch.square(self.env.projected_gravity[:, :2]), dim=1)
+
+    def _reward_base_height(self):
+        """Track height relative to terrain under the moving robot."""
+        error = (
+            self.env.base_height_above_terrain()
+            - self.env.cfg.rewards.base_height_target
+        )
+        return torch.square(error)
+
+    # def _reward_stance_posture(self):
+    #     """Regularize posture only for the zero-velocity command slice."""
+    #     command_motion = torch.linalg.norm(self.env.commands[:, :2], dim=1)
+    #     command_motion += torch.abs(self.env.commands[:, 2])
+    #     standing_command = (
+    #         command_motion
+    #         < self.env.cfg.rewards.stand_still_command_threshold
+    #     )
+    #     posture_error = torch.sum(
+    #         torch.square(
+    #             self.env.dof_pos[:, self._legs]
+    #             - self.env.default_dof_pos[:, self._legs]
+    #         ),
+    #         dim=1,
+    #     )
+    #     return posture_error * standing_command.float()
+
+    def _reward_action_magnitude(self):
+        """Penalize only the action tail near the policy clip boundary."""
+        excess = (
+            torch.abs(self.env.actions)
+            - self.env.cfg.rewards.soft_action_limit
+        ).clip(min=0.0)
+        return torch.sum(torch.square(excess), dim=1)
+
     def _reward_torque_limits_arm(self):
         excess = (
             torch.abs(self.env.torques[:, self._arm])

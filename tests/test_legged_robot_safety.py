@@ -47,16 +47,13 @@ class LeggedRobotSafetyTests(unittest.TestCase):
         )
         return env, props
 
-    def test_hard_limits_are_preserved_and_calf_offset_is_applied_once(self):
+    def test_hard_limits_are_preserved_for_runtime_safety_checks(self):
         env, props = self._make_b1_env_and_props()
 
         env._process_dof_props(props, env_id=0)
 
         self.assertAlmostEqual(-2.6, env.dof_pos_hard_limits[2, 0].item(), places=5)
         self.assertAlmostEqual(-2.6, env.dof_pos_hard_limits[5, 0].item(), places=5)
-        self.assertAlmostEqual(-2.85, env.dof_pos_limits[2, 0].item(), places=5)
-        self.assertAlmostEqual(-2.85, env.dof_pos_limits[5, 0].item(), places=5)
-        self.assertAlmostEqual(-0.9, env.dof_pos_limits[0, 0].item(), places=5)
         self.assertEqual(19, env.dof_limited_indices.numel())
 
     def test_position_targets_are_clamped_to_finite_hard_limits(self):

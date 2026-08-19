@@ -76,8 +76,10 @@ class CudaPhysicsDebugger:
         self.launch_blocking = launch_blocking
         self.last_stage = None
         self.last_tensor_summary = None
+        self.last_action_summary = None
         self.last_dof_summary = None
         self.last_contact_summary = None
+        self.last_safety_summary = None
 
     def _context(self, stage, step, substep):
         context = f"stage={stage} step={step}"
@@ -133,8 +135,10 @@ class CudaPhysicsDebugger:
             print(
                 f"[cuda-debug] CUDA failure first observed while synchronizing "
                 f"{context}: {exc} last_valid_tensors={self.last_tensor_summary!r} "
+                f"last_action_diagnostics={self.last_action_summary!r} "
                 f"last_dof_diagnostics={self.last_dof_summary!r} "
-                f"last_contact_diagnostics={self.last_contact_summary!r}",
+                f"last_contact_diagnostics={self.last_contact_summary!r} "
+                f"last_safety_resets={self.last_safety_summary!r}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -191,6 +195,17 @@ class CudaPhysicsDebugger:
             allocated = torch.cuda.memory_allocated(self.device) / (1024 ** 2)
             reserved = torch.cuda.memory_reserved(self.device) / (1024 ** 2)
             memory = f" memory_mib[allocated={allocated:.1f},reserved={reserved:.1f}]"
+            try:
+                free, total = torch.cuda.mem_get_info(self.device)
+                memory += (
+                    " device_memory_mib"
+                    f"[free={free / (1024 ** 2):.1f},"
+                    f"total={total / (1024 ** 2):.1f}]"
+                )
+            except (AttributeError, RuntimeError):
+                # Older PyTorch versions may not expose the CUDA driver-level
+                # free/total query. Tensor diagnostics remain usable there.
+                pass
         print(
             f"[cuda-debug] tensors {self.last_tensor_summary}{memory}",
             file=sys.stderr,
@@ -225,14 +240,15 @@ class CudaPhysicsDebugger:
         positions,
         velocities,
         requested_targets,
-        clamped_targets,
+        hard_clamped_targets,
+        applied_targets,
         hard_limits,
         velocity_limits,
         dof_names,
         step,
         substep=None,
     ):
-        """Retain named hard-limit, target-clamp, and velocity outliers."""
+        """Retain separate hard-clamp, slew-limit, and velocity outliers."""
         lower = hard_limits[:, 0].unsqueeze(0)
         upper = hard_limits[:, 1].unsqueeze(0)
         limited = (
@@ -247,9 +263,20 @@ class CudaPhysicsDebugger:
             limited, position_violation, torch.zeros_like(position_violation)
         )
 
-        target_clamp = torch.zeros_like(clamped_targets)
+        hard_target_clamp = torch.zeros_like(applied_targets)
         if requested_targets is not None:
-            target_clamp = (requested_targets - clamped_targets).abs()
+            hard_target_clamp = (
+                requested_targets - hard_clamped_targets
+            ).abs()
+        target_slew_limit = (
+            hard_clamped_targets - applied_targets
+        ).abs()
+        hard_clamp_rate = 100.0 * float(
+            (hard_target_clamp > 1e-6).count_nonzero().item()
+        ) / max(hard_target_clamp.numel(), 1)
+        slew_limit_rate = 100.0 * float(
+            (target_slew_limit > 1e-6).count_nonzero().item()
+        ) / max(target_slew_limit.numel(), 1)
 
         valid_velocity_limit = (
             torch.isfinite(velocity_limits) & (velocity_limits > 0)
@@ -267,7 +294,10 @@ class CudaPhysicsDebugger:
         self.last_dof_summary = (
             f"{context} hard_limit_violation="
             f"[{self._topk_named(position_violation, dof_names)}] "
-            f"target_clamp=[{self._topk_named(target_clamp, dof_names)}] "
+            f"hard_target_clamp_rate={hard_clamp_rate:.3f}% "
+            f"hard_target_clamp=[{self._topk_named(hard_target_clamp, dof_names)}] "
+            f"target_slew_limit_rate={slew_limit_rate:.3f}% "
+            f"target_slew_limit=[{self._topk_named(target_slew_limit, dof_names)}] "
             f"velocity_excess=[{self._topk_named(velocity_excess, dof_names)}]"
         )
         if self._should_report_stats(step, substep):
@@ -277,18 +307,76 @@ class CudaPhysicsDebugger:
                 flush=True,
             )
 
+    def report_action_diagnostics(self, actions, dof_names, clip, step):
+        """Retain aggregate and per-DOF policy action saturation rates."""
+        saturated = torch.abs(actions) >= (float(clip) - 1e-6)
+        per_dof_rate = saturated.float().mean(dim=0) * 100.0
+        overall_rate = 100.0 * float(saturated.count_nonzero().item()) / max(
+            saturated.numel(), 1
+        )
+        context = self._context("action_diagnostics", step, None)
+        self.last_action_summary = (
+            f"{context} saturation_rate={overall_rate:.3f}% "
+            f"per_dof_saturation="
+            f"[{self._topk_named(per_dof_rate.unsqueeze(0), dof_names)}]"
+        )
+        if self._should_report_stats(step, None):
+            print(
+                f"[cuda-debug] {self.last_action_summary}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     def report_contact_diagnostics(
-        self, contact_forces, body_names, step, substep=None
+        self,
+        contact_forces,
+        body_names,
+        step,
+        substep=None,
+        ignored_body_indices=None,
     ):
-        """Retain the environments and rigid bodies with the largest contacts."""
+        """Retain contact outliers and low-force non-foot contact occupancy."""
         magnitudes = torch.linalg.norm(contact_forces, dim=-1)
+        included = torch.ones(
+            magnitudes.shape[1], dtype=torch.bool, device=magnitudes.device
+        )
+        if ignored_body_indices is not None:
+            included[ignored_body_indices] = False
+        included_magnitudes = magnitudes[:, included]
+        active_1n = included_magnitudes > 1.0
+        active_10n = included_magnitudes > 10.0
+        envs_1n = torch.any(active_1n, dim=1)
         context = self._context("contact_diagnostics", step, substep)
         self.last_contact_summary = (
-            f"{context} top_contacts=[{self._topk_named(magnitudes, body_names)}]"
+            f"{context} nonignored_bodies_gt1N="
+            f"{int(active_1n.count_nonzero().item())} "
+            f"nonignored_bodies_gt10N="
+            f"{int(active_10n.count_nonzero().item())} "
+            f"envs_with_nonignored_contact="
+            f"{int(envs_1n.count_nonzero().item())} "
+            f"top_contacts=[{self._topk_named(magnitudes, body_names)}]"
         )
         if self._should_report_stats(step, substep):
             print(
                 f"[cuda-debug] {self.last_contact_summary}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def report_safety_resets(self, reset_masks, step):
+        """Retain task safety-reset counts for later CUDA failure reports."""
+        counts = {
+            name: int(mask.count_nonzero().item())
+            for name, mask in reset_masks.items()
+        }
+        context = self._context("safety_resets", step, None)
+        rendered = " ".join(
+            f"{name}={count}" for name, count in counts.items()
+        )
+        self.last_safety_summary = f"{context} {rendered}"
+        if self._should_report_stats(step, None):
+            print(
+                f"[cuda-debug] {self.last_safety_summary}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -299,8 +387,10 @@ class CudaPhysicsDebugger:
         print(
             f"[cuda-debug] exception {context} last_stage={self.last_stage!r} "
             f"last_valid_tensors={self.last_tensor_summary!r} "
+            f"last_action_diagnostics={self.last_action_summary!r} "
             f"last_dof_diagnostics={self.last_dof_summary!r} "
             f"last_contact_diagnostics={self.last_contact_summary!r} "
+            f"last_safety_resets={self.last_safety_summary!r} "
             f"type={type(exc).__name__} message={exc}",
             file=sys.stderr,
             flush=True,

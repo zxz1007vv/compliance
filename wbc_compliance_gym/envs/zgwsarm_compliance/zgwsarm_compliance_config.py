@@ -31,7 +31,7 @@ ZGWSARM_REWARD_SCALES = {
     # 轮足支撑
     "wheel_contact_consistency": -2.0,
     "wheel_support_load": -1.0,
-    "wheel_support_geometry": -2.0,
+    "wheel_support_geometry": -2.0,  #新增FAR.x ≈ FBL.x RAR.x ≈ RBL.x，保持对称姿态
     "wheel_lateral_slip": -0.5,
     "wheel_rolling_consistency": -0.5,
 
@@ -273,8 +273,11 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.sigma_force_magnitude = 1 / 50
     cfg.rewards.sigma_force_z = 1 / 50
     cfg.rewards.maintain_ori_force_envs = True
-    # _push_gripper writes and applies XYZ forces in the world frame.
-    cfg.rewards.force_command_frame = "world"
+    # Match B1+Z1: Fx/Fy commands are expressed in the heading-only base
+    # frame (base yaw, independent of roll/pitch). PhysX still receives the
+    # resulting force tensor in GLOBAL_SPACE; measured world forces are
+    # rotated back into this yaw frame before reward evaluation.
+    cfg.rewards.force_command_frame = "yaw"
     # Geodesic quaternion error width in radians for the calibrated tool frame.
     cfg.rewards.manip_ori_tracking_sigma = 0.5
 
@@ -283,8 +286,11 @@ def _configure_zgwsarm_rewards(cfg):
     # while a persistently unloaded/lifted wheel is penalized.
     cfg.rewards.wheel_contact_force_threshold = 5.0
     cfg.rewards.wheel_min_support_force = 20.0
-    cfg.rewards.wheel_support_front_x_min = 0.20
-    cfg.rewards.wheel_support_rear_x_max = -0.20
+    # The default-pose wheel centers are approximately +/-0.341 m in base X.
+    # These soft ranges allow suspension motion but reject folded or overly
+    # extended legs. The same reward also softly aligns each left/right pair.
+    cfg.rewards.wheel_support_front_x_range = [0.25, 0.45]
+    cfg.rewards.wheel_support_rear_x_range = [-0.45, -0.25]
     cfg.rewards.wheel_support_right_y_max = -0.12
     cfg.rewards.wheel_support_left_y_min = 0.12
     cfg.rewards.wheel_support_geometry_scale = 0.10
@@ -411,6 +417,21 @@ def _validate_zgwsarm_config(cfg):
             "invalid ZGWSARM force command frame "
             f"{cfg.rewards.force_command_frame!r}"
         )
+    arm_reset_range = cfg.init_state.arm_reset_position_range
+    if len(arm_reset_range) != 2 or arm_reset_range[0] > arm_reset_range[1]:
+        raise ValueError(
+            "invalid ZGWSARM arm reset range "
+            f"{arm_reset_range!r}"
+        )
+    for name in (
+        "wheel_support_front_x_range",
+        "wheel_support_rear_x_range",
+    ):
+        value_range = getattr(cfg.rewards, name)
+        if len(value_range) != 2 or value_range[0] > value_range[1]:
+            raise ValueError(
+                f"invalid ZGWSARM rewards.{name}={value_range!r}"
+            )
     for name in (
         "manip_ori_tracking_sigma",
         "wheel_contact_force_threshold",
@@ -593,6 +614,10 @@ def configure_zgwsarm_diagnostic_play(
     cfg.commands.limit_vel_yaw = [fixed_ang_vel_yaw, fixed_ang_vel_yaw]
 
     if scenario in {"zero_action", "velocity_arm_fixed"}:
+        # These scenarios isolate the base controller. Starting the arm at its
+        # exact default pose prevents a reset perturbation from masquerading
+        # as a locomotion-induced arm motion.
+        cfg.init_state.arm_reset_position_range = [0.0, 0.0]
         radius, pitch, yaw = cfg.commands.default_ee_position_spherical
         cfg.commands.ee_sphe_radius = [radius, radius]
         cfg.commands.limit_ee_sphe_radius = [radius, radius]

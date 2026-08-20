@@ -35,6 +35,22 @@ from utils import (
 )
 
 
+RESET_REASON_NAMES = (
+    "timeout",
+    "body_height",
+    "body_orientation",
+    "semantic_contact",
+    "other_contact",
+    "leg_torque_limit",
+    "arm_torque_limit",
+    "ee_position_limit",
+    "dof_velocity_safety",
+    "dof_position_safety",
+    "nonfoot_contact_safety",
+    "unknown",
+)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Play a registered whole-body compliance task",
@@ -201,7 +217,8 @@ class RolloutMetrics:
 
 
 def update_rollout_metrics(metrics, env, rewards, dones):
-    valid_state = ~dones.bool()
+    dones_bool = dones.bool()
+    valid_state = ~dones_bool
     force_mode = env.force_or_position_control > 0.5
     position_mode = (~force_mode) & valid_state
     valid_force_mode = force_mode & valid_state
@@ -236,6 +253,23 @@ def update_rollout_metrics(metrics, env, rewards, dones):
 
     metrics.update("reward", rewards)
     metrics.update("reset", dones.float())
+    reset_reason_fn = getattr(env, "get_reset_reason_tensors", None)
+    reason_tensors = (
+        reset_reason_fn()
+        if reset_reason_fn is not None
+        else {"timeout": getattr(env, "time_out_buf", torch.zeros_like(dones_bool))}
+    )
+    explained_resets = torch.zeros_like(dones_bool)
+    for reason_name, reason_tensor in reason_tensors.items():
+        active_reason = dones_bool & reason_tensor.bool()
+        explained_resets |= active_reason
+        metrics.update(
+            f"reset_reason/{reason_name}", active_reason.float()
+        )
+    metrics.update(
+        "reset_reason/unknown",
+        (dones_bool & ~explained_resets).float(),
+    )
     metrics.update("force_mode", force_mode.float())
     metrics.update("base_xy_error", base_xy_error, valid_state)
     metrics.update("yaw_rate_error", yaw_rate_error, valid_state)
@@ -287,9 +321,14 @@ def format_metric(value, unit="", precision=3):
     return f"{value:.{precision}f}{suffix}"
 
 
+def metric_total_count(metrics, name):
+    total = metrics.totals.get(name)
+    return 0 if total is None else int(round(total.item()))
+
+
 def print_rollout_metrics(metrics, step, steps, final=False):
     label = "Rollout summary" if final else f"Cumulative metrics {step}/{steps}"
-    reset_count = int(round(metrics.totals.get("reset", torch.tensor(0.0)).item()))
+    reset_count = metric_total_count(metrics, "reset")
     reset_rate = metrics.mean("reset")
     force_mode_fraction = metrics.mean("force_mode")
     active_force_fraction = metrics.mean("active_force_command")
@@ -305,6 +344,11 @@ def print_rollout_metrics(metrics, step, steps, final=False):
         f"[{label}]",
         f"  reward/env-step: {format_metric(metrics.mean('reward'), precision=4)}",
         f"  resets: {reset_count} ({reset_rate_text} of env-steps)",
+        "  reset causes (overlap allowed): "
+        + ", ".join(
+            f"{name}={metric_total_count(metrics, f'reset_reason/{name}')}"
+            for name in RESET_REASON_NAMES
+        ),
         f"  base XY velocity error: {format_metric(metrics.mean('base_xy_error'), 'm/s')}",
         f"  base yaw-rate error: {format_metric(metrics.mean('yaw_rate_error'), 'rad/s')}",
         f"  EE position error (position mode): {format_metric(metrics.mean('ee_position_error'), 'm')}",
@@ -491,6 +535,10 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
             ),
         },
         "config_load": getattr(env, "_config_load_info", {}),
+        "reset_causes": {
+            name: metric_total_count(metrics, f"reset_reason/{name}")
+            for name in RESET_REASON_NAMES
+        },
         "metrics": metrics.as_dict(),
         "video": str(video_path.resolve()) if video_path is not None else None,
     }

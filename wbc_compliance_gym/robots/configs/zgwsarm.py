@@ -98,6 +98,10 @@ def config_zgwsarm(cfg):
     ]
 
     cfg.init_state.pos = [0.0, 0.0, 0.55]
+    # Initial arm-pose perturbation used by the shared reset path. The former
+    # hard-coded +/-0.5 rad range produced a large recovery motion at every
+    # reset; keep a small perturbation for training robustness instead.
+    cfg.init_state.arm_reset_position_range = [-0.10, 0.10]
     cfg.init_state.default_joint_angles = {
         "FAR_ABAD_JOINT": 0.0,
         "FAR_HIP_JOINT": 0.6,

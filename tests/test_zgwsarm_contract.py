@@ -163,6 +163,9 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(ABAD_DOF_NAMES, cfg.asset.abad_dof_names)
 
         self.assertEqual([0.0, 0.0, 0.55], cfg.init_state.pos)
+        self.assertEqual(
+            [-0.10, 0.10], cfg.init_state.arm_reset_position_range
+        )
         self.assertEqual(0.54, cfg.rewards.base_height_target)
         self.assertEqual(0.54, cfg.commands.command_base_height)
         self.assertEqual(0.002, cfg.sim.dt)
@@ -184,6 +187,12 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.095, cfg.asset.wheel_radius)
         self.assertEqual(5.0, cfg.rewards.wheel_contact_force_threshold)
         self.assertEqual(20.0, cfg.rewards.wheel_min_support_force)
+        self.assertEqual(
+            [0.25, 0.45], cfg.rewards.wheel_support_front_x_range
+        )
+        self.assertEqual(
+            [-0.45, -0.25], cfg.rewards.wheel_support_rear_x_range
+        )
         self.assertEqual(0.05, cfg.diagnostics.hard_limit_margin)
         self.assertIsNone(cfg.diagnostics.zgwsarm_scenario)
         self.assertEqual(0, cfg.asset.default_dof_drive_mode)
@@ -334,6 +343,9 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual([radius, radius], cfg.commands.ee_sphe_radius)
         self.assertEqual([pitch, pitch], cfg.commands.ee_sphe_pitch)
         self.assertEqual([yaw, yaw], cfg.commands.ee_sphe_yaw)
+        self.assertEqual(
+            [0.0, 0.0], cfg.init_state.arm_reset_position_range
+        )
 
     def test_diagnostic_velocity_scenario_fixes_only_the_arm(self):
         cfg = ZGWSARMComplianceCfg()
@@ -353,6 +365,9 @@ class ZGWSARMContractTests(unittest.TestCase):
             name not in cfg.asset.fixed_action_targets
             for name in LEG_DOF_NAMES + WHEEL_DOF_NAMES
         ))
+        self.assertEqual(
+            [0.0, 0.0], cfg.init_state.arm_reset_position_range
+        )
 
     def test_diagnostic_position_scenario_moves_arm_without_force(self):
         cfg = ZGWSARMComplianceCfg()
@@ -791,8 +806,8 @@ class ZGWSARMContractTests(unittest.TestCase):
                 ),
                 rewards=SimpleNamespace(
                     wheel_min_support_force=20.0,
-                    wheel_support_front_x_min=0.20,
-                    wheel_support_rear_x_max=-0.20,
+                    wheel_support_front_x_range=[0.25, 0.45],
+                    wheel_support_rear_x_range=[-0.45, -0.25],
                     wheel_support_right_y_max=-0.12,
                     wheel_support_left_y_min=0.12,
                     wheel_support_geometry_scale=0.10,
@@ -809,7 +824,7 @@ class ZGWSARMContractTests(unittest.TestCase):
             rewards._reward_wheel_support_load(), torch.tensor([0.25])
         )
         torch.testing.assert_close(
-            rewards._reward_wheel_support_geometry(), torch.tensor([0.18])
+            rewards._reward_wheel_support_geometry(), torch.tensor([0.144])
         )
         torch.testing.assert_close(
             rewards._reward_wheel_lateral_slip(), torch.tensor([1.0 / 3.0])
@@ -817,6 +832,67 @@ class ZGWSARMContractTests(unittest.TestCase):
         torch.testing.assert_close(
             rewards._reward_wheel_rolling_consistency(),
             torch.tensor([1.0 / 3.0]),
+        )
+
+    def test_wheel_support_geometry_softly_constrains_pair_x_positions(self):
+        state = {
+            "positions_base": torch.tensor(
+                [[[0.34, -0.20, -0.5], [0.50, 0.20, -0.5],
+                  [-0.34, -0.20, -0.5], [-0.50, 0.20, -0.5]]]
+            )
+        }
+        env = SimpleNamespace(
+            get_wheel_kinematics=lambda: state,
+            cfg=SimpleNamespace(
+                asset=SimpleNamespace(
+                    wheel_dof_names=list(WHEEL_DOF_NAMES)
+                ),
+                rewards=SimpleNamespace(
+                    wheel_support_front_x_range=[0.25, 0.45],
+                    wheel_support_rear_x_range=[-0.45, -0.25],
+                    wheel_support_right_y_max=-0.12,
+                    wheel_support_left_y_min=0.12,
+                    wheel_support_geometry_scale=0.10,
+                ),
+            ),
+        )
+        rewards = ZGWSARMRewards(env)
+
+        # Each outboard wheel exceeds its range by 0.05 m and each pair
+        # differs by 0.16 m. Ten normalized geometry terms are averaged.
+        expected = (2 * 0.5 ** 2 + 2 * 1.6 ** 2) / 10.0
+        torch.testing.assert_close(
+            rewards._reward_wheel_support_geometry(),
+            torch.tensor([expected]),
+        )
+
+    def test_reset_reason_tensors_report_individual_and_overlapping_causes(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.reset_buf = torch.tensor([True, True, True])
+        env.time_out_buf = torch.tensor([True, False, False])
+        env.body_height_buf = torch.tensor([False, True, False])
+        env.body_ori_buf = torch.tensor([False, False, False])
+        env.semantic_contact_reset_buf = torch.tensor([False, False, False])
+        env.contact_buf = torch.tensor([False, False, False])
+        env.dof_velocity_safety_reset_buf = torch.tensor([False, True, False])
+        env.dof_position_safety_reset_buf = torch.tensor([False, False, False])
+        env.nonfoot_contact_safety_reset_buf = torch.tensor([False, False, True])
+
+        reasons = env.get_reset_reason_tensors()
+
+        torch.testing.assert_close(
+            reasons["timeout"], torch.tensor([True, False, False])
+        )
+        torch.testing.assert_close(
+            reasons["body_height"], torch.tensor([False, True, False])
+        )
+        torch.testing.assert_close(
+            reasons["dof_velocity_safety"],
+            torch.tensor([False, True, False]),
+        )
+        torch.testing.assert_close(
+            reasons["nonfoot_contact_safety"],
+            torch.tensor([False, False, True]),
         )
 
     def test_termination_reward_excludes_timeouts(self):

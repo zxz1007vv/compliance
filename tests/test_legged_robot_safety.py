@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import isaacgym  # noqa: F401 - must precede torch imports in this project.
 import numpy as np
@@ -73,6 +74,44 @@ class LeggedRobotSafetyTests(unittest.TestCase):
             [[-1.0, 2.0, 5.0], [0.5, -1.5, -4.0]]
         )
         self.assertTrue(torch.equal(expected, env.joint_pos_target))
+
+    def test_custom_arm_reset_uses_task_configured_position_range(self):
+        env = object.__new__(LeggedRobot)
+        env.device = "cpu"
+        env.has_custom_dof_layout = True
+        env.arm_dof_indices = torch.tensor([2, 3], dtype=torch.long)
+        env.default_dof_pos = torch.tensor([[0.1, 0.2, 0.8, -1.5]])
+        env.dof_state = torch.zeros(1, 4, 2)
+        env.dof_pos = env.dof_state[..., 0]
+        env.dof_vel = env.dof_state[..., 1]
+        env.joint_pos_target = torch.zeros(1, 4)
+        env.dof_pos_limits = torch.tensor(
+            [[-2.0, 2.0], [-2.0, 2.0], [-2.0, 2.0], [-2.0, 2.0]]
+        )
+        env.robot_actor_idxs = torch.tensor([0], dtype=torch.long)
+        env.gym = SimpleNamespace(
+            set_dof_state_tensor_indexed=lambda *args, **kwargs: None
+        )
+        env.sim = None
+        env.cfg = SimpleNamespace(
+            env=SimpleNamespace(add_balls=False),
+            ball=SimpleNamespace(asset="ball"),
+        )
+        cfg = SimpleNamespace(
+            init_state=SimpleNamespace(
+                arm_reset_position_range=[0.0, 0.0]
+            )
+        )
+
+        with patch(
+            "wbc_compliance_gym.envs.base.legged_robot.gymtorch.unwrap_tensor",
+            side_effect=lambda value: value,
+        ):
+            env._reset_dofs(torch.tensor([0]), cfg)
+
+        torch.testing.assert_close(env.dof_pos, env.default_dof_pos)
+        torch.testing.assert_close(env.joint_pos_target, env.default_dof_pos)
+        torch.testing.assert_close(env.dof_vel, torch.zeros_like(env.dof_vel))
 
 
 if __name__ == "__main__":

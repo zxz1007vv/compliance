@@ -351,6 +351,42 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
                 step=int(self.common_step_counter),
             )
 
+    def get_reset_reason_tensors(self):
+        """Expose per-step termination causes for play/evaluation logging.
+
+        Multiple causes may be true on the same step. Missing optional shared
+        buffers are represented as false so the diagnostic schema is stable.
+        """
+        zeros = torch.zeros_like(self.reset_buf, dtype=torch.bool)
+
+        def optional_buffer(name):
+            value = getattr(self, name, None)
+            return zeros if value is None else value.bool()
+
+        semantic_contact = optional_buffer("semantic_contact_reset_buf")
+        # ZGWSARM adds semantic contacts to contact_buf after the shared check;
+        # subtract them here to avoid reporting the same cause twice.
+        other_contact = optional_buffer("contact_buf") & ~semantic_contact
+        return {
+            "timeout": optional_buffer("time_out_buf"),
+            "body_height": optional_buffer("body_height_buf"),
+            "body_orientation": optional_buffer("body_ori_buf"),
+            "semantic_contact": semantic_contact,
+            "other_contact": other_contact,
+            "leg_torque_limit": optional_buffer("legs_torque_lim_buff"),
+            "arm_torque_limit": optional_buffer("arm_torque_lim_buff"),
+            "ee_position_limit": optional_buffer("ee_position_lim_buff"),
+            "dof_velocity_safety": optional_buffer(
+                "dof_velocity_safety_reset_buf"
+            ),
+            "dof_position_safety": optional_buffer(
+                "dof_position_safety_reset_buf"
+            ),
+            "nonfoot_contact_safety": optional_buffer(
+                "nonfoot_contact_safety_reset_buf"
+            ),
+        }
+
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
         if hasattr(self, "semantic_contact_counter") and len(env_ids) > 0:

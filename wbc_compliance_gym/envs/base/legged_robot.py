@@ -1356,8 +1356,14 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         self.dof_pos[env_ids] = self.default_dof_pos #+ torch_rand_float(-0.1, 0.1, (len(env_ids), self.num_dof), device=self.device)
         if getattr(self, "has_custom_dof_layout", False):
             arm_count = self.arm_dof_indices.numel()
+            arm_reset_range = getattr(
+                cfg.init_state, "arm_reset_position_range", [-0.5, 0.5]
+            )
             self.dof_pos[env_ids.unsqueeze(1), self.arm_dof_indices] += torch_rand_float(
-                -0.5, 0.5, (len(env_ids), arm_count), device=self.device
+                float(arm_reset_range[0]),
+                float(arm_reset_range[1]),
+                (len(env_ids), arm_count),
+                device=self.device,
             )
             self.dof_pos[env_ids.unsqueeze(1), self.arm_dof_indices] = torch.maximum(
                 torch.minimum(

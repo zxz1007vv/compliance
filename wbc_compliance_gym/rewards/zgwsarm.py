@@ -162,20 +162,22 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         scale = float(self.env.cfg.rewards.wheel_support_geometry_scale)
         longitudinal = []
         lateral = []
+        x_by_wheel = {}
         for wheel_index, dof_name in enumerate(
             self.env.cfg.asset.wheel_dof_names
         ):
             wheel_name = dof_name[: -len("_FOOT_JOINT")]
             x = positions[:, wheel_index, 0]
             y = positions[:, wheel_index, 1]
+            x_by_wheel[wheel_name] = x
             if wheel_name.startswith("F"):
-                x_error = (
-                    self.env.cfg.rewards.wheel_support_front_x_min - x
-                ).clip(min=0.0)
+                x_range = self.env.cfg.rewards.wheel_support_front_x_range
             else:
-                x_error = (
-                    x - self.env.cfg.rewards.wheel_support_rear_x_max
-                ).clip(min=0.0)
+                x_range = self.env.cfg.rewards.wheel_support_rear_x_range
+            x_error = torch.maximum(
+                (float(x_range[0]) - x).clip(min=0.0),
+                (x - float(x_range[1])).clip(min=0.0),
+            )
             if wheel_name.endswith("R"):
                 y_error = (
                     y - self.env.cfg.rewards.wheel_support_right_y_max
@@ -186,7 +188,17 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
                 ).clip(min=0.0)
             longitudinal.append(x_error)
             lateral.append(y_error)
-        errors = torch.stack(longitudinal + lateral, dim=1) / scale
+
+        # Only constrain longitudinal landing-point symmetry. This remains a
+        # soft cost, so independent leg motion is still available for rough
+        # terrain, turning, and arm-load compensation.
+        paired_longitudinal = [
+            x_by_wheel["FAR"] - x_by_wheel["FBL"],
+            x_by_wheel["RAR"] - x_by_wheel["RBL"],
+        ]
+        errors = torch.stack(
+            longitudinal + lateral + paired_longitudinal, dim=1
+        ) / scale
         return torch.mean(torch.square(errors), dim=1)
 
     def _reward_wheel_lateral_slip(self):

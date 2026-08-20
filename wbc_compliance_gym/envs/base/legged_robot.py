@@ -1530,9 +1530,10 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             # print(env_ids_apply_push_step1)
             if env_ids_apply_push_step1.nelement() > 0:
                 push_duration_reshaped = self.push_duration[env_ids_apply_push_step1].unsqueeze(-1)
-                # world frame
+                # Force-command frame. B1+Z1 and ZGWSARM interpret these XYZ
+                # components in the heading-only (yaw) base frame; the actual
+                # PhysX force tensor below remains in world coordinates.
                 self.current_Fxyz_cmd[env_ids_apply_push_step1, :3] = (self.force_target[env_ids_apply_push_step1, :3]/push_duration_reshaped)*(torch.clamp(self.episode_length_buf[env_ids_apply_push_step1].unsqueeze(-1) - (self.push_end_time[env_ids_apply_push_step1].unsqueeze(-1)-push_duration_reshaped), torch.zeros_like(push_duration_reshaped), push_duration_reshaped))
-                # World frame
                 self.commands[env_ids_apply_push_step1, INDEX_EE_FORCE_X] = self.current_Fxyz_cmd[env_ids_apply_push_step1, 0] #torch.norm(self.current_Fxyz_cmd[env_ids_apply_push_step1, :2], dim=1)
                 self.commands[env_ids_apply_push_step1, INDEX_EE_FORCE_Y] = self.current_Fxyz_cmd[env_ids_apply_push_step1, 1] #torch.atan2(self.current_Fxyz_cmd[env_ids_apply_push_step1, 1], self.current_Fxyz_cmd[env_ids_apply_push_step1, 0])
                 self.commands[env_ids_apply_push_step1, INDEX_EE_FORCE_Z] = self.current_Fxyz_cmd[env_ids_apply_push_step1, 2]
@@ -1546,7 +1547,7 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                 self.current_Fxyz_cmd[env_ids_apply_push_step2, :3] = self.force_target[env_ids_apply_push_step2, :3] - (self.force_target[env_ids_apply_push_step2, :3]/push_duration_reshaped)*(torch.clamp(self.episode_length_buf[env_ids_apply_push_step2].unsqueeze(-1) - (self.push_end_time[env_ids_apply_push_step2].unsqueeze(-1)+self.cfg.commands.settling_nb_it_force_gripper), torch.zeros_like(push_duration_reshaped), push_duration_reshaped))
                 # print("current target: ", self.current_Fxyz_cmd[env_ids_apply_push_step2, :3])
             
-                # World frame
+                # Keep the ramp-down command in the same force-command frame.
                 self.commands[env_ids_apply_push_step2, INDEX_EE_FORCE_X] = self.current_Fxyz_cmd[env_ids_apply_push_step2, 0] #torch.norm(self.current_Fxyz_cmd[env_ids_apply_push_step2, :2], dim=1)
                 self.commands[env_ids_apply_push_step2, INDEX_EE_FORCE_Y] = self.current_Fxyz_cmd[env_ids_apply_push_step2, 1] #torch.atan2(self.current_Fxyz_cmd[env_ids_apply_push_step2, 1], self.current_Fxyz_cmd[env_ids_apply_push_step2, 0])
                 self.commands[env_ids_apply_push_step2, INDEX_EE_FORCE_Z] = self.current_Fxyz_cmd[env_ids_apply_push_step2, 2]
@@ -2231,6 +2232,12 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         self.wheel_dof_indices = indices("wheel_dof_names")
         self.arm_dof_indices = indices("arm_dof_names")
         self.hip_dof_indices = indices("hip_dof_names")
+        abad_names = getattr(self.cfg.asset, "abad_dof_names", None)
+        self.abad_dof_indices = (
+            indices("abad_dof_names")
+            if abad_names is not None
+            else self.hip_dof_indices
+        )
         zero_position_names = getattr(
             self.cfg.asset, "zero_position_observation_dof_names", []
         )

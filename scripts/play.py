@@ -22,6 +22,9 @@ from wbc_compliance_gym.commands import (
     VALID_CONTROL_MODES,
 )
 from wbc_compliance_gym.envs import register_tasks
+from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
+    ZGWSARM_DIAGNOSTIC_SCENARIOS,
+)
 from wbc_compliance_rl.logging.experiment_logger import safe_name
 from utils import (
     load_env,
@@ -86,6 +89,27 @@ def parse_args():
         default=100,
         help="Print cumulative rollout metrics every N steps; use 0 for summary only",
     )
+    parser.add_argument(
+        "--diagnostic-scenario",
+        choices=ZGWSARM_DIAGNOSTIC_SCENARIOS,
+        help=(
+            "Apply a deterministic ZGWSARM-only A/B scenario without changing "
+            "the saved training configuration"
+        ),
+    )
+    parser.add_argument(
+        "--diagnostic-lin-vel-x",
+        type=float,
+        help=(
+            "Fixed forward command for a diagnostic scenario; "
+            "velocity_arm_fixed defaults to 0.5 m/s"
+        ),
+    )
+    parser.add_argument(
+        "--diagnostic-ang-vel-yaw",
+        type=float,
+        help="Fixed yaw-rate command for a diagnostic scenario (default: 0)",
+    )
     viewer_group = parser.add_mutually_exclusive_group()
     viewer_group.add_argument(
         "--viewer", dest="viewer", action="store_true", help="Open the Isaac Gym viewer (default)"
@@ -104,7 +128,9 @@ def parse_args():
 class RolloutMetrics:
     def __init__(self):
         self.totals = {}
+        self.square_totals = {}
         self.counts = {}
+        self.minima = {}
         self.maxima = {}
 
     def update(self, name, values, mask=None):
@@ -119,12 +145,18 @@ class RolloutMetrics:
             return
 
         value_sum = values.sum()
+        value_square_sum = torch.square(values).sum()
+        value_min = values.min()
         value_max = values.max()
         if name in self.totals:
             self.totals[name] += value_sum
+            self.square_totals[name] += value_square_sum
+            self.minima[name] = torch.minimum(self.minima[name], value_min)
             self.maxima[name] = torch.maximum(self.maxima[name], value_max)
         else:
             self.totals[name] = value_sum
+            self.square_totals[name] = value_square_sum
+            self.minima[name] = value_min
             self.maxima[name] = value_max
             self.counts[name] = 0
         self.counts[name] += values.numel()
@@ -139,6 +171,19 @@ class RolloutMetrics:
             return None
         return self.maxima[name].item()
 
+    def minimum(self, name):
+        if name not in self.minima:
+            return None
+        return self.minima[name].item()
+
+    def standard_deviation(self, name):
+        count = self.counts.get(name, 0)
+        if count == 0:
+            return None
+        mean = self.totals[name] / count
+        variance = self.square_totals[name] / count - torch.square(mean)
+        return torch.sqrt(torch.clamp(variance, min=0.0)).item()
+
     def count(self, name):
         return self.counts.get(name, 0)
 
@@ -146,6 +191,8 @@ class RolloutMetrics:
         return {
             name: {
                 "mean": self.mean(name),
+                "standard_deviation": self.standard_deviation(name),
+                "minimum": self.minimum(name),
                 "maximum": self.maximum(name),
                 "samples": self.count(name),
             }
@@ -160,10 +207,24 @@ def update_rollout_metrics(metrics, env, rewards, dones):
     valid_force_mode = force_mode & valid_state
     force_commands = env.commands[:, INDEX_EE_FORCE_X:INDEX_EE_FORCE_Z + 1]
     applied_forces_world = env.forces[:, env.gripper_stator_index, :3]
-    base_rpy_world = torch.stack(get_euler_xyz(env.base_quat), dim=1)
-    zeros = torch.zeros_like(base_rpy_world[:, 2])
-    yaw_quat_world = quat_from_euler_xyz(zeros, zeros, base_rpy_world[:, 2])
-    applied_forces = quat_rotate_inverse(yaw_quat_world, applied_forces_world)
+    force_command_frame = getattr(
+        env.cfg.rewards, "force_command_frame", "yaw"
+    )
+    if force_command_frame == "world":
+        applied_forces = applied_forces_world
+    elif force_command_frame == "yaw":
+        base_rpy_world = torch.stack(get_euler_xyz(env.base_quat), dim=1)
+        zeros = torch.zeros_like(base_rpy_world[:, 2])
+        yaw_quat_world = quat_from_euler_xyz(
+            zeros, zeros, base_rpy_world[:, 2]
+        )
+        applied_forces = quat_rotate_inverse(
+            yaw_quat_world, applied_forces_world
+        )
+    else:
+        raise ValueError(
+            f"unsupported force command frame {force_command_frame!r}"
+        )
     force_abs_error = torch.abs(applied_forces - force_commands)
     active_force_command = torch.norm(force_commands, dim=1) > 1.0
     valid_active_force = valid_force_mode & active_force_command
@@ -213,6 +274,10 @@ def update_rollout_metrics(metrics, env, rewards, dones):
         )
     metrics.update("joint_torque_rms", torque_rms)
     metrics.update("joint_torque_abs", torch.abs(env.torques))
+    diagnostic_fn = getattr(env, "get_zgwsarm_diagnostic_tensors", None)
+    if diagnostic_fn is not None:
+        for name, values in diagnostic_fn().items():
+            metrics.update(name, values, valid_state)
 
 
 def format_metric(value, unit="", precision=3):
@@ -261,9 +326,61 @@ def print_rollout_metrics(metrics, step, steps, final=False):
     tqdm.write("\n".join(lines))
 
 
+def print_zgwsarm_diagnostics(metrics):
+    """Print the compact view; the JSON retains every diagnostic statistic."""
+    if not any(name.startswith("leg/") for name in metrics.totals):
+        return
+
+    lines = [
+        "[ZGWSARM leg diagnostics: cumulative mean]",
+        "  leg joint   pos(rad) target(rad) action default-delta(rad) limit(%) sat(%)",
+    ]
+    for leg_name in ("FAR", "FBL", "RAR", "RBL"):
+        for joint_name in ("ABAD", "HIP", "KNEE"):
+            prefix = f"leg/{leg_name}/{joint_name}"
+            limit_rate = metrics.mean(f"{prefix}/hard_limit_dwell")
+            saturation_rate = metrics.mean(f"{prefix}/action_saturation")
+            lines.append(
+                f"  {leg_name:3s} {joint_name:4s} "
+                f"{format_metric(metrics.mean(f'{prefix}/position_rad'), precision=3):>8s} "
+                f"{format_metric(metrics.mean(f'{prefix}/target_rad'), precision=3):>11s} "
+                f"{format_metric(metrics.mean(f'{prefix}/action'), precision=3):>6s} "
+                f"{format_metric(metrics.mean(f'{prefix}/default_deviation_rad'), precision=3):>18s} "
+                f"{format_metric(None if limit_rate is None else 100 * limit_rate, precision=2):>8s} "
+                f"{format_metric(None if saturation_rate is None else 100 * saturation_rate, precision=2):>6s}"
+            )
+
+    lines.extend(
+        [
+            "[ZGWSARM wheel diagnostics: cumulative mean]",
+            "  wheel contact(%) normal(N) vx(m/s) |vy|(m/s) omega(rad/s) roll-res(m/s) base-res(m/s) pos-base[x,y,z](m)",
+        ]
+    )
+    for wheel_name in ("FAR", "FBL", "RAR", "RBL"):
+        prefix = f"wheel/{wheel_name}"
+        contact_rate = metrics.mean(f"{prefix}/contact")
+        position = [
+            format_metric(metrics.mean(f"{prefix}/base_position_{axis}_m"), precision=3)
+            for axis in ("x", "y", "z")
+        ]
+        lines.append(
+            f"  {wheel_name:3s} "
+            f"{format_metric(None if contact_rate is None else 100 * contact_rate, precision=1):>10s} "
+            f"{format_metric(metrics.mean(f'{prefix}/normal_force_n'), precision=1):>9s} "
+            f"{format_metric(metrics.mean(f'{prefix}/longitudinal_velocity_mps'), precision=3):>7s} "
+            f"{format_metric(metrics.mean(f'{prefix}/lateral_velocity_abs_mps'), precision=3):>9s} "
+            f"{format_metric(metrics.mean(f'{prefix}/angular_speed_radps'), precision=3):>12s} "
+            f"{format_metric(metrics.mean(f'{prefix}/rolling_residual_contact_mps'), precision=3):>13s} "
+            f"{format_metric(metrics.mean(f'{prefix}/base_speed_residual_mps'), precision=3):>13s} "
+            f"[{', '.join(position)}]"
+        )
+    tqdm.write("\n".join(lines))
+
+
 def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
          viewer=True, record_video=False, print_every=100, control_mode=None,
-         seed=1, force_amplitude=None, output=None):
+         seed=1, force_amplitude=None, output=None, diagnostic_scenario=None,
+         diagnostic_lin_vel_x=None, diagnostic_ang_vel_yaw=None):
     if num_envs < 1:
         raise ValueError("num_envs must be at least 1")
     if steps < 1:
@@ -285,6 +402,10 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         )
     task = task or saved_task
     registry.get_spec(task)
+    if diagnostic_scenario is not None and task != "zgwsarm_compliance":
+        raise ValueError(
+            "--diagnostic-scenario is available only for zgwsarm_compliance"
+        )
     run_name = safe_name(
         run_config.get("RunCfg", {}).get("training_name", run_dir.name)
     )
@@ -299,12 +420,16 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         control_mode=control_mode,
         seed=seed,
         force_amplitude=force_amplitude,
+        diagnostic_scenario=diagnostic_scenario,
+        diagnostic_lin_vel_x=diagnostic_lin_vel_x,
+        diagnostic_ang_vel_yaw=diagnostic_ang_vel_yaw,
         task_name=task,
     )
     effective_mode = env.cfg.commands.hybrid_mode
     print(
         f"Evaluation settings: mode={effective_mode}, seed={seed}, "
-        f"num_envs={num_envs}, steps={steps}"
+        f"num_envs={num_envs}, steps={steps}, "
+        f"diagnostic_scenario={diagnostic_scenario or 'none'}"
     )
     cameras = []
     video_writer = None
@@ -342,6 +467,7 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
     if video_writer is not None:
         video_writer.close()
     print_rollout_metrics(metrics, steps, steps, final=True)
+    print_zgwsarm_diagnostics(metrics)
 
     evaluation = {
         "schema_version": 1,
@@ -357,6 +483,9 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
             "num_envs": num_envs,
             "steps": steps,
             "force_amplitude": force_amplitude,
+            "diagnostic_scenario": diagnostic_scenario,
+            "diagnostic_lin_vel_x": diagnostic_lin_vel_x,
+            "diagnostic_ang_vel_yaw": diagnostic_ang_vel_yaw,
             "force_target_range": list(
                 env.cfg.domain_rand.max_push_force_xyz_gripper
             ),
@@ -402,6 +531,9 @@ if __name__ == "__main__":
             control_mode=args.control_mode,
             seed=args.seed,
             force_amplitude=args.force_amplitude,
+            diagnostic_scenario=args.diagnostic_scenario,
+            diagnostic_lin_vel_x=args.diagnostic_lin_vel_x,
+            diagnostic_ang_vel_yaw=args.diagnostic_ang_vel_yaw,
             output=args.output,
         )
     sys.stdout.flush()

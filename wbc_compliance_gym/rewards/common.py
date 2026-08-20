@@ -140,8 +140,19 @@ class ManipulationRewardMixin:
         )
         return quat_rotate_inverse(base_yaw, forces_world)
 
+    def _forces_in_command_frame(self):
+        """Match measured forces to the frame used by the task command."""
+        command_frame = getattr(
+            self.env.cfg.rewards, "force_command_frame", "yaw"
+        )
+        if command_frame == "yaw":
+            return self._forces_in_yaw_frame()
+        if command_frame == "world":
+            return self.env.forces[:, self.env.gripper_stator_index, 0:3]
+        raise ValueError(f"unsupported force command frame {command_frame!r}")
+
     def _reward_ee_force_x(self):
-        force_measured = self._forces_in_yaw_frame()[:, 0]
+        force_measured = self._forces_in_command_frame()[:, 0]
         force_command = self.env.commands[:, INDEX_EE_FORCE_X]
         error = torch.abs(force_measured - force_command)
         return (
@@ -150,7 +161,7 @@ class ManipulationRewardMixin:
         )
 
     def _reward_ee_force_y(self):
-        force_measured = self._forces_in_yaw_frame()[:, 1]
+        force_measured = self._forces_in_command_frame()[:, 1]
         force_command = self.env.commands[:, INDEX_EE_FORCE_Y]
         error = torch.abs(force_measured - force_command)
         return (
@@ -159,7 +170,7 @@ class ManipulationRewardMixin:
         )
 
     def _reward_ee_force_z(self):
-        force_measured = self.env.forces[:, self.env.gripper_stator_index, 2]
+        force_measured = self._forces_in_command_frame()[:, 2]
         force_command = self.env.commands[:, INDEX_EE_FORCE_Z]
         error = torch.abs(force_measured - force_command)
         return (

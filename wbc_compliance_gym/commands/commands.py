@@ -275,7 +275,10 @@ class CommandLifecycleMixin:
         )
 
         env_ids = torch.arange(radius_cmd.shape[0], device=self.device)
-        env_ids_resample = env_ids[z_cmd_world < 0.05]
+        minimum_world_height = getattr(
+            self.cfg.commands, "ee_min_world_height", 0.05
+        )
+        env_ids_resample = env_ids[z_cmd_world < minimum_world_height]
         if env_ids_resample.nelement() > 0:
             commands_feasible = False
         return commands_feasible, env_ids_resample
@@ -342,6 +345,68 @@ class CommandLifecycleMixin:
         return ee_pos_sphe_arm
 
     def get_measured_ee_rpy_yrf(self) -> torch.Tensor:
+        ee_quat_yrf = self.get_measured_ee_quat_yrf()
+        nominal_rpy = getattr(
+            self.cfg.commands, "ee_nominal_orientation_rpy", None
+        )
+        if nominal_rpy is not None:
+            nominal_rpy = torch.as_tensor(
+                nominal_rpy,
+                dtype=ee_quat_yrf.dtype,
+                device=ee_quat_yrf.device,
+            )
+            nominal_quat = quat_from_euler_xyz(
+                nominal_rpy[0].expand(self.num_envs),
+                nominal_rpy[1].expand(self.num_envs),
+                nominal_rpy[2].expand(self.num_envs),
+            )
+            ee_quat_command_frame = quat_mul(
+                quat_conjugate(nominal_quat), ee_quat_yrf
+            )
+        else:
+            ee_quat_command_frame = ee_quat_yrf
+        ee_rpy_yrf = torch.stack(
+            get_euler_xyz(ee_quat_command_frame), dim=1
+        )
+        ee_rpy_yrf = plus_2pi_wrap_to_pi(ee_rpy_yrf)
+
+        ee_ori_cmd = self.commands[
+            :, INDEX_EE_ROLL_CMD : INDEX_EE_YAW_CMD + 1
+        ].clone()
+        if nominal_rpy is None:
+            roll_error = torch.minimum(
+                torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:, 0]),
+                2 * np.pi - torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:, 0]),
+            )
+            pitch_error = torch.minimum(
+                torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]),
+                2 * np.pi - torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]),
+            )
+            yaw_error = torch.minimum(
+                torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]),
+                2 * np.pi - torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]),
+            )
+            self.gripper_ori_tracking_error_buf = torch.norm(
+                torch.stack((roll_error, pitch_error, yaw_error), dim=1), dim=1
+            )
+        else:
+            command_quat = quat_from_euler_xyz(
+                ee_ori_cmd[:, 0], ee_ori_cmd[:, 1], ee_ori_cmd[:, 2]
+            )
+            error_quat = quat_mul(
+                quat_conjugate(ee_quat_command_frame), command_quat
+            )
+            error_quat = error_quat / torch.linalg.norm(
+                error_quat, dim=1, keepdim=True
+            ).clamp(min=1e-8)
+            self.gripper_ori_tracking_error_buf = 2.0 * torch.atan2(
+                torch.linalg.norm(error_quat[:, :3], dim=1),
+                torch.abs(error_quat[:, 3]),
+            )
+        return ee_rpy_yrf
+
+    def get_measured_ee_quat_yrf(self) -> torch.Tensor:
+        """Return the LINK7 quaternion relative to the base-yaw frame."""
         ee_idx = self.gym.find_actor_rigid_body_handle(
             self.envs[0],
             self.robot_actor_handles[0],
@@ -363,28 +428,9 @@ class CommandLifecycleMixin:
             base_rpy_world[:, 2],
         )
         ee_quat_yrf = quat_mul(quat_conjugate(quat_yrf), ee_quat)
-        ee_rpy_yrf = torch.stack(get_euler_xyz(ee_quat_yrf), dim=1)
-        ee_rpy_yrf = plus_2pi_wrap_to_pi(ee_rpy_yrf)
-
-        ee_ori_cmd = self.commands[
-            :, INDEX_EE_ROLL_CMD : INDEX_EE_YAW_CMD + 1
-        ].clone()
-        roll_error = torch.minimum(
-            torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:, 0]),
-            2 * np.pi - torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:, 0]),
-        )
-        pitch_error = torch.minimum(
-            torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]),
-            2 * np.pi - torch.abs(ee_rpy_yrf[:, 1] - ee_ori_cmd[:, 1]),
-        )
-        yaw_error = torch.minimum(
-            torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]),
-            2 * np.pi - torch.abs(ee_rpy_yrf[:, 2] - ee_ori_cmd[:, 2]),
-        )
-        self.gripper_ori_tracking_error_buf = torch.norm(
-            torch.stack((roll_error, pitch_error, yaw_error), dim=1), dim=1
-        )
-        return ee_rpy_yrf
+        return ee_quat_yrf / torch.linalg.norm(
+            ee_quat_yrf, dim=1, keepdim=True
+        ).clamp(min=1e-8)
 
     def set_gripper_teleop_value(self, value: float):
         self.teleop_gripper_value = value * torch.ones_like(

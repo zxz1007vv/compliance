@@ -24,12 +24,15 @@ WHEEL_DOF_NAMES = [
     "RBL_FOOT_JOINT",
 ]
 ARM_DOF_NAMES = [f"ROBOT_ARM_JOINT{i}" for i in range(1, 7)]
-HIP_DOF_NAMES = [
+ABAD_DOF_NAMES = [
     "FAR_ABAD_JOINT",
     "FBL_ABAD_JOINT",
     "RAR_ABAD_JOINT",
     "RBL_ABAD_JOINT",
 ]
+# Backward-compatible export for code that still calls the lateral hip joint
+# group "hip".  ZGWSARM control uses the explicit ABAD name below.
+HIP_DOF_NAMES = ABAD_DOF_NAMES
 FOOT_LINK_NAMES = [
     "FAR_FOOT_LINK",
     "FBL_FOOT_LINK",
@@ -62,7 +65,9 @@ def config_zgwsarm(cfg):
     cfg.asset.leg_dof_names = list(LEG_DOF_NAMES)
     cfg.asset.wheel_dof_names = list(WHEEL_DOF_NAMES)
     cfg.asset.arm_dof_names = list(ARM_DOF_NAMES)
+    cfg.asset.abad_dof_names = list(ABAD_DOF_NAMES)
     cfg.asset.hip_dof_names = list(HIP_DOF_NAMES)
+    cfg.asset.wheel_radius = 0.095
     cfg.asset.zero_position_observation_dof_names = list(WHEEL_DOF_NAMES)
     cfg.asset.fixed_action_targets = {}
     cfg.asset.penalize_contacts_on = [
@@ -138,6 +143,10 @@ def config_zgwsarm(cfg):
 
     cfg.control.control_type = "P"
     cfg.control.action_scale = 0.25
+    # ABAD has the narrowest asymmetric leg limits.  With clip_actions=4 this
+    # gives at most +/-0.4 rad around the default pose, instead of +/-1 rad.
+    cfg.control.abad_scale_reduction = 0.4
+    # Kept only for compatibility with the shared controller configuration.
     cfg.control.hip_scale_reduction = 1.0
     # ZGWSARM's arm already receives the global 0.25 rad action scale.  The
     # inherited B1+Z1 value of 2.0 enlarged arm requests and drove the policy
@@ -171,10 +180,26 @@ def config_zgwsarm(cfg):
     cfg.commands.d_gains_arm = [1.5, 3.0, 1.5, 1.5, 1.5, 1.5]
     cfg.commands.arm_mount_translation = [-0.195, 0.0, 0.1703]
     cfg.commands.arm_mount_yaw = np.pi
+    # Forward kinematics of the configured [0, 0.8, -1.5, 0, 0, 0] arm pose,
+    # expressed in the command arm frame.  Diagnostic locomotion scenarios use
+    # this instead of asking a fixed arm to track the unrelated 0.4 m target.
+    cfg.commands.default_ee_position_spherical = [
+        0.7714136743,
+        -1.3098718840,
+        0.0,
+    ]
+    # LINK7 has a fixed orientation offset at the same nominal pose.  For
+    # ZGWSARM, a zero RPY command means this calibrated tool orientation.
+    cfg.commands.ee_nominal_orientation_rpy = [
+        0.0,
+        -0.8707963268,
+        0.0,
+    ]
     return cfg
 
 
 __all__ = [
+    "ABAD_DOF_NAMES",
     "ARM_DOF_NAMES",
     "FOOT_LINK_NAMES",
     "HIP_DOF_NAMES",

@@ -1,7 +1,5 @@
 """Independent training and play configuration for ZGWSARM compliance."""
 
-import numpy as np
-
 from wbc_compliance_gym.envs.base.compliance_task_config import (
     apply_reward_scales,
     build_compliance_ppo_config,
@@ -13,36 +11,69 @@ from wbc_compliance_gym.utils.config_utils import ConfigNode
 
 
 ZGWSARM_REWARD_SCALES = {
+    # 任务跟踪
+    "tracking_lin_vel": 1.0,
+    "tracking_ang_vel_yaw": 2.0,
+    "manip_pos_tracking": 3.0,
+    "manip_ori_tracking": 2.5,
+    "ee_force_x": 3.0,
+    "ee_force_y": 3.0,
+    "ee_force_z": 3.0,
+
+    # 底盘稳定
+    "survival": 1.0,
+    "orientation": -5.0,
+    "base_height": -30.0,
+    "ang_vel_xy": -0.05,
+    "lin_vel_z": -4.0,
+    "stance_posture": -0.5,
+
+    # 轮足支撑
+    "wheel_contact_consistency": -2.0,
+    "wheel_support_load": -1.0,
+    "wheel_support_geometry": -2.0,
+    "wheel_lateral_slip": -0.5,
+    "wheel_rolling_consistency": -0.5,
+
+    # 动作平滑与能耗
     "action_magnitude": -0.05,
     "action_smoothness_1_arm": -0.01,
     "action_smoothness_1_leg": -0.03,
     "action_smoothness_2_arm": -0.01,
-    "ang_vel_xy": -0.05,
-    "base_height": -30.0,
-    "collision": -5.0,
     "dof_acc_arm": -3e-8,
     "dof_acc_leg": -1.5e-6,
-    "dof_pos_limits_arm": -10.0,
-    "dof_pos_limits_leg": -1.0,
     "dof_vel_arm": -0.003,
     "dof_vel_leg": -0.0008,
-    "ee_force_x": 3.0,
-    "ee_force_y": 3.0,
-    "ee_force_z": 3.0,
-    "feet_contact_forces": -0.1,
-    "lin_vel_z": -4.0,
-    "manip_ori_tracking": 2.5,
-    "manip_pos_tracking": 3.0,
-    "orientation": -5.0,
-    "survival": 1.0,
-    "termination": -10.0,
-    "torque_limits_arm": -0.005,
-    "torque_limits_leg": -0.005,
     "torques": -8e-5,
     "torques_arm": -1e-5,
-    "tracking_ang_vel_yaw": 2.0,
-    "tracking_lin_vel": 1.0,
+
+    # 关节、力矩与接触安全
+    "dof_pos_limits_arm": -10.0,
+    "dof_pos_limits_leg": -1.0,
+    "torque_limits_arm": -0.005,
+    "torque_limits_leg": -0.005,
+    "feet_contact_forces": -0.1,
+    "collision": -5.0,
+
+    # 回合终止：仅真实失败生效，正常超时不扣分
+    "termination": -10.0,
 }
+
+ZGWSARM_DIAGNOSTIC_SCENARIOS = (
+    "zero_action",
+    "velocity_arm_fixed",
+    "position_arm",
+    "force",
+)
+
+#机械臂运动范围指令
+ZGWSARM_EE_RADIUS_RANGE = (0.35, 0.80)
+ZGWSARM_EE_PITCH_RANGE = (-1.35, 0.60)
+ZGWSARM_EE_YAW_RANGE = (-1.20, 1.20)
+
+#机械臂力指令范围。
+# The largest possible resultant is therefore sqrt(3) * 30 ~= 52 N.
+ZGWSARM_FORCE_COMPONENT_RANGE = (-30.0, 30.0)
 
 
 def _configure_zgwsarm_environment(cfg):
@@ -53,6 +84,13 @@ def _configure_zgwsarm_environment(cfg):
     cfg.env.priv_passthrough = False
     cfg.env.recording_width_px = 180
     cfg.env.recording_height_px = 120
+
+    # Read-only rollout diagnostics. These values do not participate in the
+    # observation, reward, control, or termination paths.
+    cfg.diagnostics = ConfigNode(
+        zgwsarm_scenario=None,
+        hard_limit_margin=0.05,
+    )
 
 
 def _configure_zgwsarm_observations(cfg):
@@ -166,16 +204,24 @@ def _configure_zgwsarm_commands(cfg):
     # it does not make ZGWSARM inherit the B1 robot or reward configuration.
     cfg.commands.inverse_IK_door_opening = True
 
-    cfg.commands.ee_force_z = [-70.0, 70.0]
-    cfg.commands.limit_ee_force_z = [-70.0, 70.0]
-    cfg.commands.ee_force_magnitude = [-70.0, 70.0]
-    cfg.commands.limit_ee_force_magnitude = [-70.0, 70.0]
-    cfg.commands.ee_sphe_radius = [0.25, 0.65]
-    cfg.commands.limit_ee_sphe_radius = [0.25, 0.65]
-    cfg.commands.ee_sphe_pitch = [-2 * np.pi / 5, 2 * np.pi / 5]
-    cfg.commands.limit_ee_sphe_pitch = [-2 * np.pi / 5, 2 * np.pi / 5]
-    cfg.commands.ee_sphe_yaw = [-3 * np.pi / 5, 3 * np.pi / 5]
-    cfg.commands.limit_ee_sphe_yaw = [-3 * np.pi / 5, 3 * np.pi / 5]
+    # Slots 12-14 retain historical force-range names in the shared command
+    # schema.  Keep their compatibility bounds synchronized with the actual
+    # XYZ force sampler configured in domain_rand below.
+    cfg.commands.ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.ee_force_magnitude = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_magnitude = list(
+        ZGWSARM_FORCE_COMPONENT_RANGE
+    )
+    cfg.commands.ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
+    cfg.commands.limit_ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
+    cfg.commands.ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+    cfg.commands.limit_ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+    cfg.commands.ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    cfg.commands.limit_ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    # All corners of the configured spherical box remain above this height at
+    # the nominal 0.54 m base height; the shared B1+Z1 default remains 0.05 m.
+    cfg.commands.ee_min_world_height = 0.15
     cfg.commands.ee_timing = [1.0, 4.0]
     cfg.commands.limit_ee_timing = [1.0, 4.0]
     cfg.commands.settle_time = 2.0
@@ -190,6 +236,8 @@ def _configure_zgwsarm_commands(cfg):
 def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.reward_container_name = "ZGWSARMRewards"
     cfg.rewards.base_height_target = 0.54
+    # Preserve the task's selected reward aggregation behavior. Termination is
+    # added separately after ordinary reward clipping in the shared loop.
     cfg.rewards.only_positive_rewards = True
     cfg.rewards.only_positive_rewards_ji22_style = False
     cfg.rewards.sigma_rew_neg = 0.02
@@ -209,6 +257,7 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.terminal_contact_debounce_steps = 2
 
     cfg.rewards.soft_dof_pos_limit = 0.9
+    cfg.rewards.soft_dof_pos_limit_arm = 0.9
     cfg.rewards.soft_action_limit = 3.0
     cfg.rewards.stand_still_command_threshold = 0.10
     cfg.rewards.soft_torque_limit_leg = 1.0
@@ -224,6 +273,23 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.sigma_force_magnitude = 1 / 50
     cfg.rewards.sigma_force_z = 1 / 50
     cfg.rewards.maintain_ori_force_envs = True
+    # _push_gripper writes and applies XYZ forces in the world frame.
+    cfg.rewards.force_command_frame = "world"
+    # Geodesic quaternion error width in radians for the calibrated tool frame.
+    cfg.rewards.manip_ori_tracking_sigma = 0.5
+
+    # Wheel-specific normalized reward parameters.  A 20 N minimum is far
+    # below the nominal ~116 N/wheel static load, so brief dynamics are allowed
+    # while a persistently unloaded/lifted wheel is penalized.
+    cfg.rewards.wheel_contact_force_threshold = 5.0
+    cfg.rewards.wheel_min_support_force = 20.0
+    cfg.rewards.wheel_support_front_x_min = 0.20
+    cfg.rewards.wheel_support_rear_x_max = -0.20
+    cfg.rewards.wheel_support_right_y_max = -0.12
+    cfg.rewards.wheel_support_left_y_min = 0.12
+    cfg.rewards.wheel_support_geometry_scale = 0.10
+    cfg.rewards.wheel_lateral_slip_scale = 0.25
+    cfg.rewards.wheel_rolling_error_scale = 0.25
 
     apply_reward_scales(cfg, ZGWSARM_REWARD_SCALES)
 
@@ -270,8 +336,12 @@ def _configure_zgwsarm_domain_randomization(cfg):
     cfg.domain_rand.gripper_force_kp_range = [25.0, 400.0]
     cfg.domain_rand.gripper_force_kd_range = [3.0, 10.0]
     cfg.domain_rand.prop_kd = 0.1
-    cfg.domain_rand.max_push_force_xyz_gripper = [-70.0, 70.0]
-    cfg.domain_rand.max_push_force_xyz_gripper_freed = [-70.0, 70.0]
+    cfg.domain_rand.max_push_force_xyz_gripper = list(
+        ZGWSARM_FORCE_COMPONENT_RANGE
+    )
+    cfg.domain_rand.max_push_force_xyz_gripper_freed = list(
+        ZGWSARM_FORCE_COMPONENT_RANGE
+    )
     cfg.domain_rand.push_gripper_stators = False
     cfg.domain_rand.push_gripper_interval_s = [3.5, 9.0]
     cfg.domain_rand.push_gripper_duration_s = [1.0, 3.0]
@@ -336,6 +406,21 @@ def _validate_zgwsarm_config(cfg):
         )
     if cfg.commands.hybrid_mode not in {"position", "force", "binary", "mixed"}:
         raise ValueError(f"invalid ZGWSARM hybrid mode {cfg.commands.hybrid_mode!r}")
+    if cfg.rewards.force_command_frame not in {"world", "yaw"}:
+        raise ValueError(
+            "invalid ZGWSARM force command frame "
+            f"{cfg.rewards.force_command_frame!r}"
+        )
+    for name in (
+        "manip_ori_tracking_sigma",
+        "wheel_contact_force_threshold",
+        "wheel_min_support_force",
+        "wheel_support_geometry_scale",
+        "wheel_lateral_slip_scale",
+        "wheel_rolling_error_scale",
+    ):
+        if getattr(cfg.rewards, name) <= 0.0:
+            raise ValueError(f"ZGWSARM rewards.{name} must be positive")
     for name in (
         "ee_sphe_radius",
         "ee_sphe_pitch",
@@ -347,6 +432,16 @@ def _validate_zgwsarm_config(cfg):
         value_range = getattr(cfg.commands, name)
         if len(value_range) != 2 or value_range[0] > value_range[1]:
             raise ValueError(f"invalid ZGWSARM command range {name}={value_range!r}")
+    for index, name in enumerate(
+        ("ee_sphe_radius", "ee_sphe_pitch", "ee_sphe_yaw")
+    ):
+        default_value = cfg.commands.default_ee_position_spherical[index]
+        value_range = getattr(cfg.commands, name)
+        if not value_range[0] <= default_value <= value_range[1]:
+            raise ValueError(
+                f"ZGWSARM default EE {name}={default_value} lies outside "
+                f"the command range {value_range}"
+            )
     return cfg
 
 
@@ -379,6 +474,9 @@ def configure_zgwsarm_compliance_play(
     interpolate_ee_cmds=True,
     sample_feasible_commands=False,
     control_only_z1=False,
+    diagnostic_scenario=None,
+    diagnostic_lin_vel_x=None,
+    diagnostic_ang_vel_yaw=None,
 ):
     """Build a play configuration for ZGWSARM compliance."""
     cfg.env.num_recording_envs = 1
@@ -398,10 +496,12 @@ def configure_zgwsarm_compliance_play(
     if seed is not None:
         cfg.commands.curriculum_seed = seed
     if force_amplitude is not None:
-        cfg.domain_rand.max_push_force_xyz_gripper = [
+        force_range = [
             -float(force_amplitude),
             float(force_amplitude),
         ]
+        cfg.domain_rand.max_push_force_xyz_gripper = list(force_range)
+        cfg.domain_rand.max_push_force_xyz_gripper_freed = list(force_range)
 
     cfg.commands.lin_vel_x = [0.0, 0.0]
     cfg.commands.limit_vel_x = [0.0, 0.0]
@@ -429,6 +529,116 @@ def configure_zgwsarm_compliance_play(
     cfg.env.recording_width_px = 1280
     cfg.env.record_video = True
     cfg.env.send_eval_data = True
+    if diagnostic_scenario is not None:
+        configure_zgwsarm_diagnostic_play(
+            cfg,
+            diagnostic_scenario,
+            lin_vel_x=diagnostic_lin_vel_x,
+            ang_vel_yaw=diagnostic_ang_vel_yaw,
+            force_amplitude=force_amplitude,
+        )
+    return cfg
+
+
+def configure_zgwsarm_diagnostic_play(
+    cfg,
+    scenario,
+    *,
+    lin_vel_x=None,
+    ang_vel_yaw=None,
+    force_amplitude=None,
+):
+    """Apply deterministic, evaluation-only ZGWSARM diagnostic conditions."""
+    if scenario not in ZGWSARM_DIAGNOSTIC_SCENARIOS:
+        raise ValueError(
+            f"unknown ZGWSARM diagnostic scenario {scenario!r}; expected one "
+            f"of {ZGWSARM_DIAGNOSTIC_SCENARIOS}"
+        )
+
+    cfg.diagnostics.zgwsarm_scenario = scenario
+    cfg.terrain.mesh_type = "plane"
+    cfg.terrain.teleport_robots = False
+    cfg.terrain.yaw_init_range = 0.0
+
+    # Remove disturbances from the A/B test. Gripper force gains are the one
+    # exception: the legacy environment initializes them only through its
+    # randomization path, so a degenerate range is used below instead.
+    for name, value in vars(cfg.domain_rand).items():
+        if name.startswith("randomize_") and isinstance(value, bool):
+            setattr(cfg.domain_rand, name, False)
+    cfg.domain_rand.push_robots = False
+    cfg.domain_rand.push_gripper_stators = False
+    cfg.domain_rand.push_robot_base = False
+    cfg.domain_rand.randomize_lag_timesteps = False
+    cfg.noise.add_noise = False
+
+    kp_min, kp_max = cfg.domain_rand.gripper_force_kp_range
+    nominal_force_kp = 0.5 * (float(kp_min) + float(kp_max))
+    cfg.domain_rand.gripper_force_kp_range = [
+        nominal_force_kp,
+        nominal_force_kp,
+    ]
+    cfg.domain_rand.randomize_gripper_force_gains = True
+    cfg.domain_rand.gripper_forced_prob = 1.0
+
+    fixed_lin_vel_x = 0.0 if lin_vel_x is None else float(lin_vel_x)
+    fixed_ang_vel_yaw = 0.0 if ang_vel_yaw is None else float(ang_vel_yaw)
+    if scenario == "velocity_arm_fixed" and lin_vel_x is None:
+        fixed_lin_vel_x = 0.5
+    cfg.commands.lin_vel_x = [fixed_lin_vel_x, fixed_lin_vel_x]
+    cfg.commands.limit_vel_x = [fixed_lin_vel_x, fixed_lin_vel_x]
+    cfg.commands.lin_vel_y = [0.0, 0.0]
+    cfg.commands.limit_vel_y = [0.0, 0.0]
+    cfg.commands.ang_vel_yaw = [fixed_ang_vel_yaw, fixed_ang_vel_yaw]
+    cfg.commands.limit_vel_yaw = [fixed_ang_vel_yaw, fixed_ang_vel_yaw]
+
+    if scenario in {"zero_action", "velocity_arm_fixed"}:
+        radius, pitch, yaw = cfg.commands.default_ee_position_spherical
+        cfg.commands.ee_sphe_radius = [radius, radius]
+        cfg.commands.limit_ee_sphe_radius = [radius, radius]
+        cfg.commands.ee_sphe_pitch = [pitch, pitch]
+        cfg.commands.limit_ee_sphe_pitch = [pitch, pitch]
+        cfg.commands.ee_sphe_yaw = [yaw, yaw]
+        cfg.commands.limit_ee_sphe_yaw = [yaw, yaw]
+
+    cfg.asset.fixed_action_targets = {}
+    if scenario == "zero_action":
+        cfg.asset.fixed_action_targets = {
+            name: 0.0
+            for name in (
+                list(cfg.asset.leg_dof_names)
+                + list(cfg.asset.wheel_dof_names)
+                + list(cfg.asset.arm_dof_names)
+            )
+        }
+    elif scenario == "velocity_arm_fixed":
+        cfg.asset.fixed_action_targets = {
+            name: 0.0 for name in cfg.asset.arm_dof_names
+        }
+
+    if scenario == "position_arm":
+        cfg.commands.hybrid_mode = "position"
+        cfg.commands.ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
+        cfg.commands.limit_ee_sphe_radius = list(
+            ZGWSARM_EE_RADIUS_RANGE
+        )
+        cfg.commands.ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+        cfg.commands.limit_ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+        cfg.commands.ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+        cfg.commands.limit_ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    elif scenario == "force":
+        amplitude = 10.0 if force_amplitude is None else float(force_amplitude)
+        if amplitude < 0.0:
+            raise ValueError("force_amplitude must be non-negative")
+        cfg.commands.hybrid_mode = "force"
+        cfg.domain_rand.max_push_force_xyz_gripper = [-amplitude, amplitude]
+        cfg.domain_rand.max_push_force_xyz_gripper_freed = [-amplitude, amplitude]
+    else:
+        cfg.commands.hybrid_mode = "position"
+
+    if scenario != "force":
+        cfg.domain_rand.max_push_force_xyz_gripper = [0.0, 0.0]
+        cfg.domain_rand.max_push_force_xyz_gripper_freed = [0.0, 0.0]
     return cfg
 
 
@@ -445,9 +655,15 @@ class ZGWSARMComplianceCfgPPO(ConfigNode):
 
 
 __all__ = [
+    "ZGWSARM_DIAGNOSTIC_SCENARIOS",
+    "ZGWSARM_EE_PITCH_RANGE",
+    "ZGWSARM_EE_RADIUS_RANGE",
+    "ZGWSARM_EE_YAW_RANGE",
+    "ZGWSARM_FORCE_COMPONENT_RANGE",
     "ZGWSARM_REWARD_SCALES",
     "ZGWSARMComplianceCfg",
     "ZGWSARMComplianceCfgPPO",
     "configure_zgwsarm_compliance",
     "configure_zgwsarm_compliance_play",
+    "configure_zgwsarm_diagnostic_play",
 ]

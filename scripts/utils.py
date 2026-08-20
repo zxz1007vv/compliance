@@ -184,7 +184,10 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
              sample_feasible_commands: bool = False, control_only_z1: bool = False,
              local_run_dir: str = None, checkpoint="latest",
              control_mode: str = None, seed: int = 1,
-             force_amplitude: float = None, task_name: str = DEFAULT_TASK):
+             force_amplitude: float = None, task_name: str = DEFAULT_TASK,
+             diagnostic_scenario: str = None,
+             diagnostic_lin_vel_x: float = None,
+             diagnostic_ang_vel_yaw: float = None):
     '''
     1. Load the parameters and weights of a wandb run
     2. Initialize the simulation parameters with these weights.
@@ -207,6 +210,11 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
         validate_control_mode(control_mode)
     if force_amplitude is not None and force_amplitude < 0:
         raise ValueError("force_amplitude must be non-negative")
+    if diagnostic_scenario is not None and task_name != "zgwsarm_compliance":
+        raise ValueError(
+            "diagnostic scenarios are currently available only for "
+            "zgwsarm_compliance"
+        )
 
     register_tasks()
     task_spec = task_registry.get_spec(task_name)
@@ -290,8 +298,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     # Cfg.noise.noise_level = 0
 
     if task_spec.play_cfg_hook is not None:
-        task_spec.play_cfg_hook(
-            cfg,
+        play_kwargs = dict(
             num_envs=num_envs,
             control_mode=control_mode,
             seed=seed,
@@ -302,6 +309,13 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
             sample_feasible_commands=sample_feasible_commands,
             control_only_z1=control_only_z1,
         )
+        if diagnostic_scenario is not None:
+            play_kwargs.update(
+                diagnostic_scenario=diagnostic_scenario,
+                diagnostic_lin_vel_x=diagnostic_lin_vel_x,
+                diagnostic_ang_vel_yaw=diagnostic_ang_vel_yaw,
+            )
+        task_spec.play_cfg_hook(cfg, **play_kwargs)
     else:
         cfg.env.num_envs = num_envs
 
@@ -319,6 +333,9 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
         "seed": seed,
         "force_amplitude": force_amplitude,
         "force_target_range": list(cfg.domain_rand.max_push_force_xyz_gripper),
+        "diagnostic_scenario": diagnostic_scenario,
+        "diagnostic_lin_vel_x": diagnostic_lin_vel_x,
+        "diagnostic_ang_vel_yaw": diagnostic_ang_vel_yaw,
     }
 
     if local_run_dir is not None:

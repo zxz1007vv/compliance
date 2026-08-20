@@ -67,6 +67,60 @@ class CommonRewardTests(unittest.TestCase):
         )
         torch.testing.assert_close(rewards._reward_ee_force_z(), expected)
 
+    def test_force_tracking_rotates_world_force_into_yaw_frame(self):
+        commands = torch.zeros(1, 23)
+        commands[:, INDEX_EE_FORCE_X] = 10.0
+        forces = torch.tensor([[[0.0, 10.0, 0.0]]])
+        half_yaw = math.pi / 4.0
+        env = SimpleNamespace(
+            num_envs=1,
+            commands=commands,
+            forces=forces,
+            gripper_stator_index=0,
+            base_quat=torch.tensor(
+                [[0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw)]]
+            ),
+            force_or_position_control=torch.tensor([1.0]),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(
+                    sigma_force_z=0.02,
+                    force_command_frame="yaw",
+                )
+            ),
+        )
+        rewards = WholeBodyComplianceRewards(env)
+
+        torch.testing.assert_close(
+            rewards._reward_ee_force_x(), torch.tensor([1.0])
+        )
+
+    def test_force_tracking_can_explicitly_use_world_frame(self):
+        commands = torch.zeros(1, 23)
+        commands[:, INDEX_EE_FORCE_X] = 10.0
+        forces = torch.tensor([[[10.0, 0.0, 0.0]]])
+        half_yaw = math.pi / 4.0
+        env = SimpleNamespace(
+            num_envs=1,
+            commands=commands,
+            forces=forces,
+            gripper_stator_index=0,
+            base_quat=torch.tensor(
+                [[0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw)]]
+            ),
+            force_or_position_control=torch.tensor([1.0]),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(
+                    sigma_force_z=0.02,
+                    force_command_frame="world",
+                )
+            ),
+        )
+        rewards = WholeBodyComplianceRewards(env)
+
+        torch.testing.assert_close(
+            rewards._reward_ee_force_x(), torch.tensor([1.0])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

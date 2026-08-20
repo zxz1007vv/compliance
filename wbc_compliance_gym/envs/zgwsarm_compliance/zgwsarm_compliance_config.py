@@ -104,7 +104,7 @@ def configure_zgwsarm_compliance_play(
     cfg,
     *,
     num_envs=1,
-    control_mode=None,
+    control_mode= "position",
     seed=1,
     force_amplitude=None,
     fix_base=False,
@@ -138,8 +138,8 @@ def configure_zgwsarm_compliance_play(
     )
     cfg.domain_rand.max_push_force_xyz_gripper = [-amplitude, amplitude]
     cfg.domain_rand.max_push_force_xyz_gripper_freed = [-amplitude, amplitude]
-    cfg.commands.ee_sphe_radius = [0.45, 0.45]
-    cfg.commands.limit_ee_sphe_radius = [0.45, 0.45]
+    cfg.commands.ee_sphe_radius = [0.30, 0.30]
+    cfg.commands.limit_ee_sphe_radius = [0.30, 0.30]
     return cfg
 
 

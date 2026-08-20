@@ -171,15 +171,6 @@ def config_zgwsarm(cfg):
     cfg.commands.d_gains_arm = [1.5, 3.0, 1.5, 1.5, 1.5, 1.5]
     cfg.commands.arm_mount_translation = [-0.195, 0.0, 0.1703]
     cfg.commands.arm_mount_yaw = np.pi
-    cfg.commands.command_base_height = 0.54
-
-    cfg.rewards.base_height_target = 0.54
-    # Semantic failure contacts use a low, debounced threshold; the 5000 N
-    # control threshold above remains an independent solver protection.
-    cfg.rewards.terminal_contact_force = 10.0
-    cfg.rewards.terminal_contact_debounce_steps = 2
-    cfg.rewards.stand_still_command_threshold = 0.10
-    cfg.rewards.soft_action_limit = 3.0
     return cfg
 
 

@@ -1,6 +1,7 @@
 """Task reward containers and their stable config-name registry."""
 
 from .b1_z1 import B1LocoZ1GaitfreeRewards, B1Z1Rewards
+from .common import WholeBodyComplianceRewards
 from .zgwsarm import ZGWSARMRewards
 
 
@@ -25,6 +26,7 @@ def make_reward_container(name, env):
 __all__ = [
     "B1LocoZ1GaitfreeRewards",
     "B1Z1Rewards",
+    "WholeBodyComplianceRewards",
     "ZGWSARMRewards",
     "REWARD_CONTAINERS",
     "make_reward_container",

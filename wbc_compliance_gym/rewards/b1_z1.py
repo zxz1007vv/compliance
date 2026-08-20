@@ -1,31 +1,21 @@
 import torch
 import numpy as np
 from wbc_compliance_gym.commands import (
-    INDEX_EE_FORCE_X,
-    INDEX_EE_FORCE_Y,
-    INDEX_EE_FORCE_Z,
-    INDEX_EE_PITCH_CMD,
     INDEX_EE_POS_PITCH_CMD,
     INDEX_EE_POS_RADIUS_CMD,
     INDEX_EE_POS_YAW_CMD,
     INDEX_EE_ROLL_CMD,
-    INDEX_EE_TIMING_CMD,
     INDEX_EE_YAW_CMD,
 )
-from wbc_compliance_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, get_scale_shift
+from wbc_compliance_gym.utils.math_utils import quat_apply_yaw
+from wbc_compliance_gym.rewards.common import WholeBodyComplianceRewards
 from isaacgym.torch_utils import *
-import math
 
 TRANSFORM_BASE_ARM_X = 0.2
 TRANSFORM_BASE_ARM_Z = 0.1585
 DEFAULT_BASE_HEIGHT = 0.6 # 0.78
 
-class B1Z1Rewards:
-    def __init__(self, env):
-        self.env = env
-
-    def load_env(self, env):
-        self.env = env
+class B1Z1Rewards(WholeBodyComplianceRewards):
 
     ###########################
     ########## ARM ############
@@ -162,81 +152,6 @@ class B1Z1Rewards:
 
         return torch.exp(-ee_position_coeff*ee_position_error - ee_ori_tracking_error * tracking_coef_manip_ori) 
     
-    def _reward_manip_ori_tracking(self):
-        ee_rpy_yrf = self.env.get_measured_ee_rpy_yrf()
-        ee_ori_cmd = self.env.commands[:, INDEX_EE_ROLL_CMD:INDEX_EE_YAW_CMD+1].clone()
-
-        # convert the pitch and yaw into a unit vector
-        ee_current_vec = torch.stack([torch.cos(ee_rpy_yrf[:, 1]) * torch.cos(ee_rpy_yrf[:, 2]),
-                                    torch.cos(ee_rpy_yrf[:, 1]) * torch.sin(ee_rpy_yrf[:, 2]),
-                                    torch.sin(ee_rpy_yrf[:, 1])], dim=1)
-        ee_cmd_vec = torch.stack([torch.cos(ee_ori_cmd[:, 1]) * torch.cos(ee_ori_cmd[:, 2]),
-                                    torch.cos(ee_ori_cmd[:, 1]) * torch.sin(ee_ori_cmd[:, 2]),
-                                    torch.sin(ee_ori_cmd[:, 1])], dim=1)
-
-        # calculate the angle between the two vectors
-        dot_product = torch.sum(ee_current_vec * ee_cmd_vec, dim=1).unsqueeze(1)
-        dot_product = dot_product.clamp(-1, 1)
-        angle_error = torch.acos(dot_product)
-
-        # compute the quaternion error
-        ee_current_quat = quat_from_euler_xyz(ee_rpy_yrf[:, 0], ee_rpy_yrf[:, 1], ee_rpy_yrf[:, 2])
-        ee_cmd_quat = quat_from_euler_xyz(ee_ori_cmd[:, 0], ee_ori_cmd[:, 1], ee_ori_cmd[:, 2])
-        ee_quat_error = quat_mul(quat_conjugate(ee_current_quat), ee_cmd_quat)
-        
-        norm = torch.norm(ee_quat_error, dim=1).unsqueeze(1)
-        ee_quat_error_normalized = ee_quat_error / norm
-
-        # Compute the error as the norm of the vector part
-        vector_part = ee_quat_error_normalized[:, :3]  # Exclude the scalar part w
-        error_value = torch.norm(vector_part, dim=1)
-
-        # print(ee_quat_error, error_value)
-
-        # calculate the roll error
-        roll_error = torch.minimum(torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:,0]),
-                                        2*np.pi - torch.abs(ee_rpy_yrf[:, 0] - ee_ori_cmd[:,0]))
-          
-        assert not (torch.any(torch.logical_or(roll_error < 0, roll_error > np.pi)))
-        tracking_coef_manip_ori = 5.0
-        # tracking_coef_manip_ori = 3.0
-        # ee_ori_tracking_error = roll_error**2 + pitch_error**2 + yaw_error**2
-        # ee_ori_tracking_error = roll_error**2 + angle_error**2
-        ee_ori_tracking_error = error_value
-        # print(ee_roll_eff, ee_rpy_yrf[:, 0], roll_error)
-        if self.env.cfg.rewards.maintain_ori_force_envs:
-            return torch.exp(-ee_ori_tracking_error * tracking_coef_manip_ori)
-        else:
-            return torch.exp(-ee_ori_tracking_error * tracking_coef_manip_ori) * (1 - self.env.force_or_position_control)
-    
-    def _reward_manip_ori_tracking_yaw_only(self):
-        ee_rpy_yrf = self.env.get_measured_ee_rpy_yrf()
-        ee_ori_cmd = self.env.commands[:, INDEX_EE_ROLL_CMD:INDEX_EE_YAW_CMD+1].clone()
-        
-        # compute the quaternion error
-        ee_current_quat = quat_from_euler_xyz(0. * ee_rpy_yrf[:, 0], 0. * ee_rpy_yrf[:, 1], ee_rpy_yrf[:, 2])
-        ee_cmd_quat = quat_from_euler_xyz(0. * ee_rpy_yrf[:, 0], 0. * ee_rpy_yrf[:, 1], ee_ori_cmd[:, 2])
-        ee_quat_error = quat_mul(quat_conjugate(ee_current_quat), ee_cmd_quat)
-        
-        norm = torch.norm(ee_quat_error, dim=1).unsqueeze(1)
-        ee_quat_error_normalized = ee_quat_error / norm
-
-        # Compute the error as the norm of the vector part
-        vector_part = ee_quat_error_normalized[:, :3]  # Exclude the scalar part w
-        error_value = torch.norm(vector_part, dim=1)
-
-        tracking_coef_manip_ori = 5.0
-        # tracking_coef_manip_ori = 3.0
-        # ee_ori_tracking_error = roll_error**2 + pitch_error**2 + yaw_error**2
-        # ee_ori_tracking_error = roll_error**2 + angle_error**2
-        ee_ori_tracking_error = error_value
-        # print(ee_roll_eff, ee_rpy_yrf[:, 0], roll_error)
-        if self.env.cfg.rewards.maintain_ori_force_envs:
-            return torch.exp(-ee_ori_tracking_error * tracking_coef_manip_ori)
-        else:
-            return torch.exp(-ee_ori_tracking_error * tracking_coef_manip_ori) * (1 - self.env.force_or_position_control)
-    
-    
     def _reward_torque_limits_arm(self):
         # penalize torques too close to the limit
         return torch.sum(torch.square(
@@ -286,35 +201,6 @@ class B1Z1Rewards:
     ###########################
     ########## LEG ############
     ###########################
-
-    def _reward_ang_vel_xy(self):
-        # Penalize xy axes base angular velocity
-        return torch.sum(torch.square(self.env.base_ang_vel[:, :2]), dim=1)
-    
-    def _reward_lin_vel_z(self):
-        # Penalize z axis base linear velocity
-        return torch.square(self.env.base_lin_vel[:, 2])
-    
-    def _reward_survival(self):
-        # Penalize torques
-        return torch.ones(self.env.num_envs, device=self.env.device)
-
-    def _reward_tracking_lin_vel(self):
-        lin_vel_error = torch.sum(torch.square(self.env.commands[:, :2] - self.env.base_lin_vel[:, :2]), dim=1)
-        self.env.lin_vel_tracking_error_buf[:] = lin_vel_error
-        return torch.exp(-lin_vel_error / self.env.cfg.rewards.tracking_sigma_v_x)
-    
-    def _reward_tracking_ang_vel_yaw(self):
-        # Tracking of angular velocity commands (yaw axis)
-        ang_vel_error = torch.abs(self.env.commands[:, 2] - self.env.base_ang_vel[:, 2])
-        self.env.ang_vel_tracking_error_buf[:] = ang_vel_error
-        return torch.exp(-ang_vel_error/ self.env.cfg.rewards.tracking_sigma_v_yaw)
-    
-
-    def _reward_feet_contact_forces(self):
-        # penalize high contact forces
-        return torch.sum((torch.norm(self.env.contact_forces[:, self.env.feet_indices, :],
-                                     dim=-1) - self.env.cfg.rewards.max_contact_force).clip(min=0.), dim=1)
 
     def _reward_tracking_contacts_shaped_force(self):
         foot_forces = torch.norm(self.env.contact_forces[:, self.env.feet_indices, :], dim=-1)
@@ -401,72 +287,6 @@ class B1Z1Rewards:
         diff = diff * (self.env.last_actions[:, :12] != 0)  # ignore first step
         diff = diff * (self.env.last_last_actions[:, :12] != 0)  # ignore second step
         return torch.sum(diff, dim=1)
-
-    def _reward_collision(self):
-        # Penalize collisions on selected bodies
-        # print('self.env.penalised_contact_indices: ', self.env.penalised_contact_indices)
-        return torch.sum(1. * (torch.norm(self.env.contact_forces[:, self.env.penalised_contact_indices, :], dim=-1) > 0.1),
-                         dim=1)
-
-
-    ########################
-    # force tracking rewards
-    ########################
-    
-    def _reward_ee_force_x(self):
-        
-        xy_forces_global = self.env.forces[:, self.env.gripper_stator_index, 0:3]
-        base_quat_world = self.env.base_quat.view(self.env.num_envs,4)
-        base_rpy_world = torch.stack(get_euler_xyz(base_quat_world), dim=1)
-        base_quat_world_indep = quat_from_euler_xyz(0 * base_rpy_world[:, 0], 0 * base_rpy_world[:, 1], base_rpy_world[:, 2])
-        xy_forces_local = quat_rotate_inverse(base_quat_world_indep, xy_forces_global)
-        
-        force_magn_meas = (xy_forces_local[:, 0]).view(self.env.num_envs, 1)
-        force_magn_cmd = (self.env.commands[:, INDEX_EE_FORCE_X]).view(self.env.num_envs, 1)
-        force_magn_error = torch.abs(force_magn_meas - force_magn_cmd).view(self.env.num_envs)
-
-        force_magn_coeff = self.env.cfg.rewards.sigma_force_z
-        return torch.exp(-force_magn_coeff*force_magn_error) * self.env.force_or_position_control
-    
-    def _reward_ee_force_y(self):
-        
-        xy_forces_global = self.env.forces[:, self.env.gripper_stator_index, 0:3]
-        base_quat_world = self.env.base_quat.view(self.env.num_envs,4)
-        base_rpy_world = torch.stack(get_euler_xyz(base_quat_world), dim=1)
-        base_quat_world_indep = quat_from_euler_xyz(0 * base_rpy_world[:, 0], 0 * base_rpy_world[:, 1], base_rpy_world[:, 2])
-        xy_forces_local = quat_rotate_inverse(base_quat_world_indep, xy_forces_global)
-
-        force_magn_meas = (xy_forces_local[:, 1]).view(self.env.num_envs, 1)
-        force_magn_cmd = (self.env.commands[:, INDEX_EE_FORCE_Y]).view(self.env.num_envs, 1)
-        force_magn_error = torch.abs(force_magn_meas - force_magn_cmd).view(self.env.num_envs)
-
-        force_magn_coeff = self.env.cfg.rewards.sigma_force_z
-        return torch.exp(-force_magn_coeff*force_magn_error) * self.env.force_or_position_control
-    
-    def _reward_ee_force_z(self):
-
-        force_magn_meas = (self.env.forces[:, self.env.gripper_stator_index, 2]).view(self.env.num_envs, 1)
-        force_magn_cmd = (self.env.commands[:, INDEX_EE_FORCE_Z]).view(self.env.num_envs, 1)
-        force_magn_error = torch.abs(force_magn_meas - force_magn_cmd).view(self.env.num_envs)
-
-        force_magn_coeff = self.env.cfg.rewards.sigma_force_z
-        return torch.exp(-force_magn_coeff*force_magn_error) * self.env.force_or_position_control
-
-    def _reward_ee_force_magnitude_x_pen(self):
-        
-        force_magn_meas = torch.abs(self.env.forces[:, self.env.gripper_stator_index, 0]).view(self.env.num_envs, 1)
-        force_magn_cmd = 0.0 
-        force_magn_error = torch.abs(force_magn_meas - force_magn_cmd).view(self.env.num_envs)
-
-        return force_magn_error  * self.env.force_or_position_control
-    
-    def _reward_ee_force_magnitude_y_pen(self):
-       
-        force_magn_meas = torch.abs(self.env.forces[:, self.env.gripper_stator_index, 1]).view(self.env.num_envs, 1)
-        force_magn_cmd = 0.0 
-        force_magn_error = torch.abs(force_magn_meas - force_magn_cmd).view(self.env.num_envs)
-
-        return force_magn_error  * self.env.force_or_position_control
 
     def _reward_dof_pos(self):
         # Penalize dof positions

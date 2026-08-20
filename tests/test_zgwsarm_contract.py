@@ -2,14 +2,19 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import isaacgym  # noqa: F401 - must precede torch imports in this project.
 import numpy as np
 from isaacgym import gymapi
 import torch
 
+from wbc_compliance_gym.envs.base.compliance_task_config import (
+    active_reward_scales,
+)
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
+    ZGWSARM_REWARD_SCALES,
     ZGWSARMComplianceCfg,
     ZGWSARMComplianceCfgPPO,
     configure_zgwsarm_compliance_play,
@@ -17,7 +22,12 @@ from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_env import (
     ZGWSARMComplianceEnv,
 )
-from wbc_compliance_gym.rewards import REWARD_CONTAINERS, ZGWSARMRewards
+from wbc_compliance_gym.rewards import (
+    B1Z1Rewards,
+    REWARD_CONTAINERS,
+    WholeBodyComplianceRewards,
+    ZGWSARMRewards,
+)
 from wbc_compliance_gym.robots.configs.zgwsarm import (
     ARM_DOF_NAMES,
     FOOT_LINK_NAMES,
@@ -149,7 +159,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.002, cfg.sim.dt)
         self.assertEqual(5, cfg.control.decimation)
         self.assertEqual(0.01, cfg.sim.dt * cfg.control.decimation)
-        self.assertEqual(2048, cfg.env.num_envs)
+        self.assertEqual(4000, cfg.env.num_envs)
         self.assertEqual(4.0, cfg.normalization.clip_actions)
         self.assertEqual(1.0, cfg.control.arm_scale_reduction)
         self.assertEqual(1.0, cfg.control.arm_target_velocity_limit_scale)
@@ -168,7 +178,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual([1.0, 1.0, 1.0] * 4, cfg.commands.d_gains_legs)
         self.assertEqual([60.0] * 4, cfg.commands.p_gains_wheels)
         self.assertEqual([0.2] * 4, cfg.commands.d_gains_wheels)
-        self.assertFalse(cfg.rewards.only_positive_rewards)
+        self.assertTrue(cfg.rewards.only_positive_rewards)
         self.assertEqual(-10.0, cfg.reward_scales.termination)
         self.assertEqual(-5.0, cfg.reward_scales.orientation)
         self.assertEqual(-30.0, cfg.reward_scales.base_height)
@@ -185,23 +195,45 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertIn("HIP_LINK", cfg.asset.terminate_after_contacts_on)
         self.assertIn("KNEE_LINK", cfg.asset.terminate_after_contacts_on)
         self.assertIn("ROBOT_ARM_LINK", cfg.asset.terminate_after_contacts_on)
-        self.assertEqual([-10.0, 10.0], cfg.domain_rand.max_push_force_xyz_gripper)
-        self.assertEqual("position", cfg.commands.hybrid_mode)
+        self.assertEqual([-70.0, 70.0], cfg.domain_rand.max_push_force_xyz_gripper)
+        self.assertEqual(
+            [-70.0, 70.0], cfg.domain_rand.max_push_force_xyz_gripper_freed
+        )
+        self.assertEqual("binary", cfg.commands.hybrid_mode)
 
-    def test_play_disables_training_curriculum_but_keeps_explicit_force(self):
+    def test_config_does_not_build_from_the_b1_z1_task(self):
+        with patch(
+            "wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config."
+            "configure_b1_z1_ik",
+            side_effect=AssertionError("ZGWSARM must not call the B1+Z1 builder"),
+        ):
+            cfg = ZGWSARMComplianceCfg()
+
+        self.assertEqual("zgwsarm", cfg.robot.name)
+        self.assertEqual(ZGWSARM_REWARD_SCALES, active_reward_scales(cfg))
+
+    def test_active_rewards_are_an_explicit_zgwsarm_manifest(self):
+        cfg = ZGWSARMComplianceCfg()
+        self.assertEqual(ZGWSARM_REWARD_SCALES, active_reward_scales(cfg))
+        self.assertNotIn("raibert_heuristic", active_reward_scales(cfg))
+        self.assertNotIn(
+            "tracking_contacts_shaped_force", active_reward_scales(cfg)
+        )
+        self.assertNotIn(
+            "tracking_contacts_shaped_vel", active_reward_scales(cfg)
+        )
+        self.assertNotIn("feet_clearance_cmd", active_reward_scales(cfg))
+
+    def test_play_keeps_explicit_force_override(self):
         cfg = ZGWSARMComplianceCfg()
         configure_zgwsarm_compliance_play(
             cfg, control_mode="force", force_amplitude=30.0
         )
 
-        self.assertFalse(cfg.domain_rand.zgwsarm_curriculum_enabled)
         self.assertEqual([-30.0, 30.0], cfg.domain_rand.max_push_force_xyz_gripper)
-        self.assertEqual(
-            [-30.0, 30.0], cfg.domain_rand.max_push_force_xyz_gripper_freed
-        )
         self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_x)
 
-    def test_play_without_force_override_uses_final_curriculum_load(self):
+    def test_play_without_force_override_keeps_training_force_range(self):
         cfg = ZGWSARMComplianceCfg()
         configure_zgwsarm_compliance_play(cfg, control_mode="force")
 
@@ -220,6 +252,15 @@ class ZGWSARMContractTests(unittest.TestCase):
             "zgwsarm_compliance", ZGWSARMComplianceCfgPPO().run.task_name
         )
         self.assertIs(ZGWSARMRewards, REWARD_CONTAINERS["ZGWSARMRewards"])
+
+    def test_reward_container_does_not_inherit_b1_gait_semantics(self):
+        self.assertTrue(issubclass(ZGWSARMRewards, WholeBodyComplianceRewards))
+        self.assertTrue(issubclass(B1Z1Rewards, WholeBodyComplianceRewards))
+        self.assertFalse(issubclass(ZGWSARMRewards, B1Z1Rewards))
+        self.assertFalse(hasattr(ZGWSARMRewards, "_reward_raibert_heuristic"))
+        self.assertFalse(
+            hasattr(ZGWSARMRewards, "_reward_tracking_contacts_shaped_force")
+        )
 
     def test_specialized_wheel_torque_formula_and_effort_clipping(self):
         env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
@@ -301,72 +342,6 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertAlmostEqual(0.0, env.torques[0, 7].item())
         self.assertAlmostEqual(0.02, env.joint_pos_target[0, 16].item())
         self.assertAlmostEqual(0.02, env.joint_pos_target[0, 17].item())
-
-    def test_progressive_randomization_reaches_midpoint(self):
-        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
-        env.common_step_counter = 75000
-        env.cfg = SimpleNamespace(
-            domain_rand=SimpleNamespace(
-                zgwsarm_curriculum_enabled=True,
-                zgwsarm_force_mode_start_step=25000,
-                zgwsarm_curriculum_start_step=25000,
-                zgwsarm_curriculum_end_step=125000,
-                zgwsarm_force_initial=10.0,
-                zgwsarm_force_final=70.0,
-                zgwsarm_push_velocity_initial=0.0,
-                zgwsarm_push_velocity_final=0.8,
-                zgwsarm_gravity_initial=0.0,
-                zgwsarm_gravity_final=0.5,
-                zgwsarm_motor_strength_initial=[0.98, 1.02],
-                zgwsarm_motor_strength_final=[0.9, 1.1],
-                zgwsarm_Kd_factor_initial=[0.9, 1.1],
-                zgwsarm_Kd_factor_final=[0.5, 1.5],
-            ),
-            commands=SimpleNamespace(hybrid_mode="position"),
-        )
-
-        env._update_training_curriculum()
-
-        domain_rand = env.cfg.domain_rand
-        self.assertEqual([-40.0, 40.0], domain_rand.max_push_force_xyz_gripper)
-        self.assertAlmostEqual(0.4, domain_rand.max_push_vel_xy)
-        self.assertEqual([-0.25, 0.25], domain_rand.gravity_range)
-        self.assertAlmostEqual(0.94, domain_rand.motor_strength_range[0])
-        self.assertAlmostEqual(1.06, domain_rand.motor_strength_range[1])
-        self.assertAlmostEqual(0.7, domain_rand.Kd_factor_range[0])
-        self.assertAlmostEqual(1.3, domain_rand.Kd_factor_range[1])
-        self.assertEqual("binary", env.cfg.commands.hybrid_mode)
-
-    def test_force_mode_is_not_enabled_during_initial_locomotion_stage(self):
-        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
-        env.common_step_counter = 24999
-        env.cfg = SimpleNamespace(
-            domain_rand=SimpleNamespace(
-                zgwsarm_curriculum_enabled=True,
-                zgwsarm_force_mode_start_step=25000,
-                zgwsarm_curriculum_start_step=25000,
-                zgwsarm_curriculum_end_step=125000,
-                zgwsarm_force_initial=10.0,
-                zgwsarm_force_final=70.0,
-                zgwsarm_push_velocity_initial=0.0,
-                zgwsarm_push_velocity_final=0.8,
-                zgwsarm_gravity_initial=0.0,
-                zgwsarm_gravity_final=0.5,
-                zgwsarm_motor_strength_initial=[0.98, 1.02],
-                zgwsarm_motor_strength_final=[0.9, 1.1],
-                zgwsarm_Kd_factor_initial=[0.9, 1.1],
-                zgwsarm_Kd_factor_final=[0.5, 1.5],
-            ),
-            commands=SimpleNamespace(hybrid_mode="binary"),
-        )
-
-        env._update_training_curriculum()
-
-        self.assertEqual("position", env.cfg.commands.hybrid_mode)
-        self.assertEqual(
-            [-10.0, 10.0],
-            env.cfg.domain_rand.max_push_force_xyz_gripper,
-        )
 
     def test_pathological_states_are_selected_for_reset(self):
         env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
@@ -456,23 +431,9 @@ class ZGWSARMContractTests(unittest.TestCase):
             env.base_height_above_terrain(), torch.tensor([0.50, 0.55])
         )
 
-    def test_stance_posture_reward_only_applies_to_zero_velocity_commands(self):
-        env = SimpleNamespace(
-            leg_dof_indices=torch.arange(12),
-            commands=torch.tensor(
-                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float
-            ),
-            dof_pos=torch.ones(2, 12),
-            default_dof_pos=torch.zeros(1, 12),
-            cfg=SimpleNamespace(
-                rewards=SimpleNamespace(stand_still_command_threshold=0.1)
-            ),
-        )
-        rewards = ZGWSARMRewards(env)
-
-        value = rewards._reward_stance_posture()
-
-        torch.testing.assert_close(value, torch.tensor([12.0, 0.0]))
+    def test_stance_posture_is_not_enabled_during_config_separation(self):
+        cfg = ZGWSARMComplianceCfg()
+        self.assertNotIn("stance_posture", active_reward_scales(cfg))
 
     def test_termination_reward_excludes_timeouts(self):
         env = SimpleNamespace(

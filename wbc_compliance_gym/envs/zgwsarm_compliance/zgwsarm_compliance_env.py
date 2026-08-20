@@ -8,62 +8,6 @@ from wbc_compliance_gym.envs.base.velocity_tracking_env import VelocityTrackingE
 class ZGWSARMComplianceEnv(VelocityTrackingEnv):
     """Keep the shared compliance task while adapting ZGWT actuators."""
 
-    def pre_physics_step(self):
-        self._update_training_curriculum()
-        super().pre_physics_step()
-
-    def _update_training_curriculum(self):
-        """Ramp ZGWSARM disturbances without disabling velocity tracking."""
-        domain_rand = self.cfg.domain_rand
-        if not getattr(domain_rand, "zgwsarm_curriculum_enabled", False):
-            return
-
-        if (
-            self.common_step_counter
-            < domain_rand.zgwsarm_force_mode_start_step
-        ):
-            self.cfg.commands.hybrid_mode = "position"
-        else:
-            self.cfg.commands.hybrid_mode = "binary"
-
-        start = domain_rand.zgwsarm_curriculum_start_step
-        end = domain_rand.zgwsarm_curriculum_end_step
-        denominator = max(float(end - start), 1.0)
-        progress = min(max((float(self.common_step_counter) - start) / denominator, 0.0), 1.0)
-
-        def lerp(initial, final):
-            return initial + (final - initial) * progress
-
-        force = lerp(
-            domain_rand.zgwsarm_force_initial,
-            domain_rand.zgwsarm_force_final,
-        )
-        domain_rand.max_push_force_xyz_gripper = [-force, force]
-        domain_rand.max_push_force_xyz_gripper_freed = [-force, force]
-        domain_rand.max_push_vel_xy = lerp(
-            domain_rand.zgwsarm_push_velocity_initial,
-            domain_rand.zgwsarm_push_velocity_final,
-        )
-        gravity = lerp(
-            domain_rand.zgwsarm_gravity_initial,
-            domain_rand.zgwsarm_gravity_final,
-        )
-        domain_rand.gravity_range = [-gravity, gravity]
-        domain_rand.motor_strength_range = [
-            lerp(initial, final)
-            for initial, final in zip(
-                domain_rand.zgwsarm_motor_strength_initial,
-                domain_rand.zgwsarm_motor_strength_final,
-            )
-        ]
-        domain_rand.Kd_factor_range = [
-            lerp(initial, final)
-            for initial, final in zip(
-                domain_rand.zgwsarm_Kd_factor_initial,
-                domain_rand.zgwsarm_Kd_factor_final,
-            )
-        ]
-
     @staticmethod
     def _select_group_factors(factors, indices, num_dof):
         """Support both per-environment and per-DOF randomization tensors."""

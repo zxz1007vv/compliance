@@ -2,7 +2,14 @@ import unittest
 
 import isaacgym
 
-from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg, B1Z1CfgPPO
+from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import (
+    B1_Z1_REWARD_SCALES,
+    B1Z1Cfg,
+    B1Z1CfgPPO,
+)
+from wbc_compliance_gym.envs.base.compliance_task_config import (
+    active_reward_scales,
+)
 from wbc_compliance_gym.utils.config_utils import config_fingerprint
 
 
@@ -34,6 +41,9 @@ class B1Z1ConfigContract(unittest.TestCase):
         self.assertEqual(
             config_fingerprint(fingerprint_target), EXPECTED_TRAIN_CONFIG_SHA256
         )
+
+    def test_active_rewards_match_the_b1_z1_task_manifest(self):
+        self.assertEqual(B1_Z1_REWARD_SCALES, active_reward_scales(B1Z1Cfg()))
 
     def test_config_factories_return_isolated_objects(self):
         first = B1Z1Cfg()

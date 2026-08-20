@@ -14,11 +14,11 @@ from wbc_compliance_gym.commands import (
     INDEX_EE_POS_YAW_CMD,
 )
 
-from .b1_z1 import B1Z1Rewards
+from .common import WholeBodyComplianceRewards
 
 
-class ZGWSARMRewards(B1Z1Rewards):
-    """Reuse B1+Z1 formulas while selecting ZGWSARM joints by semantic group."""
+class ZGWSARMRewards(WholeBodyComplianceRewards):
+    """ZGWSARM-specific rewards with semantic joint-group selection."""
 
     @property
     def _arm(self):

@@ -113,33 +113,55 @@ def configure_zgwsarm_compliance_play(
     sample_feasible_commands=False,
     control_only_z1=False,
 ):
-    """Apply evaluation-only overrides without robot details in play.py."""
-    configure_b1_z1_play(
-        cfg,
-        num_envs=num_envs,
-        control_mode=control_mode,
-        seed=seed,
-        force_amplitude=force_amplitude,
-        fix_base=fix_base,
-        teleop=teleop,
-        interpolate_ee_cmds=interpolate_ee_cmds,
-        sample_feasible_commands=sample_feasible_commands,
-        control_only_z1=control_only_z1,
-    )
-    # Evaluation must use the explicitly requested force/push settings rather
-    # than restarting the training curriculum at its 10 N initial value.
-    cfg.domain_rand.zgwsarm_curriculum_enabled = False
-    # With no explicit override, evaluate the final 70 N task rather than the
-    # curriculum's 10 N starting point. This is irrelevant in position mode.
-    amplitude = (
-        cfg.domain_rand.zgwsarm_force_final
-        if force_amplitude is None
-        else float(force_amplitude)
-    )
-    cfg.domain_rand.max_push_force_xyz_gripper = [-amplitude, amplitude]
-    cfg.domain_rand.max_push_force_xyz_gripper_freed = [-amplitude, amplitude]
-    cfg.commands.ee_sphe_radius = [0.30, 0.30]
-    cfg.commands.limit_ee_sphe_radius = [0.30, 0.30]
+    """Build a play configuration for ZGWSARM compliance."""
+    cfg.env.num_recording_envs = 1
+    cfg.env.num_envs = num_envs
+    cfg.env.episode_length_s = 10000
+    cfg.terrain.num_rows = 10
+    cfg.terrain.num_cols = 10
+    cfg.terrain.border_size = 0
+    cfg.terrain.num_border_boxes = 0
+    cfg.terrain.center_robots = True
+    cfg.terrain.center_span = 1
+    cfg.terrain.teleport_robots = False
+    cfg.terrain.mesh_type = "plane"    #plane 需要 teleport_robots = False
+
+    if control_mode is not None:
+        cfg.commands.hybrid_mode = control_mode
+    if seed is not None:
+        cfg.commands.curriculum_seed = seed
+    if force_amplitude is not None:
+        cfg.domain_rand.max_push_force_xyz_gripper = [
+            -float(force_amplitude),
+            float(force_amplitude),
+        ]
+
+    cfg.commands.lin_vel_x = [0.0, 0.0]
+    cfg.commands.limit_vel_x = [0.0, 0.0]
+    cfg.commands.lin_vel_y = [0.0, 0.0]
+    cfg.commands.limit_vel_y = [0.0, 0.0]
+    cfg.commands.ang_vel_yaw = [0.0, 0.0]
+    cfg.commands.limit_vel_yaw = [0.0, 0.0]
+
+    cfg.commands.ee_sphe_radius = [0.40, 0.40]
+    cfg.commands.limit_ee_sphe_radius = [0.40, 0.40]
+    cfg.commands.ee_sphe_pitch = [0.0, 0.0]
+    cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
+    cfg.commands.ee_sphe_yaw = [0.0, 0.0]
+    cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
+
+    cfg.domain_rand.push_robots = False
+    cfg.domain_rand.randomize_tile_roughness = False
+    cfg.asset.fix_base_link = fix_base
+    cfg.commands.teleop_occulus = teleop
+    cfg.commands.interpolate_ee_cmds = interpolate_ee_cmds
+    cfg.commands.sample_feasible_commands = sample_feasible_commands
+    cfg.commands.control_only_z1 = control_only_z1
+
+    cfg.env.recording_height_px = 720
+    cfg.env.recording_width_px = 1280
+    cfg.env.record_video = True
+    cfg.env.send_eval_data = True
     return cfg
 
 

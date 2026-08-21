@@ -26,12 +26,17 @@ ZGWSARM_REWARD_SCALES = {
     "base_height": -30.0,
     "ang_vel_xy": -0.05,
     "lin_vel_z": -4.0,
-    "stance_posture": -0.5,
+    # Only active for near-zero base commands, so locomotion remains free to
+    # articulate the legs while stationary manipulation gets a firmer stance.
+    "stance_posture": -2.0,
 
     # 轮足支撑
     "wheel_contact_consistency": -2.0,
     "wheel_support_load": -1.0,
-    "wheel_support_geometry": -2.0,  #新增FAR.x ≈ FBL.x RAR.x ≈ RBL.x，保持对称姿态
+    "wheel_support_load_balance": -1.0,
+    # Softly regularize the support footprint; this does not bind paired
+    # joints or prevent independent suspension motion.
+    "wheel_support_geometry": -2.0,
     "wheel_lateral_slip": -0.5,
     "wheel_rolling_consistency": -0.5,
 
@@ -49,7 +54,10 @@ ZGWSARM_REWARD_SCALES = {
 
     # 关节、力矩与接触安全
     "dof_pos_limits_arm": -10.0,
-    "dof_pos_limits_leg": -1.0,
+    "dof_pos_limits_leg": -2.0,
+    # ABAD joints receive an earlier, robot-specific soft barrier because the
+    # observed distorted stance repeatedly dwelled near their hard limits.
+    "abad_pos_limits": -2.0,
     "torque_limits_arm": -0.005,
     "torque_limits_leg": -0.005,
     "feet_contact_forces": -0.1,
@@ -236,8 +244,6 @@ def _configure_zgwsarm_commands(cfg):
 def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.reward_container_name = "ZGWSARMRewards"
     cfg.rewards.base_height_target = 0.54
-    # Preserve the task's selected reward aggregation behavior. Termination is
-    # added separately after ordinary reward clipping in the shared loop.
     cfg.rewards.only_positive_rewards = True
     cfg.rewards.only_positive_rewards_ji22_style = False
     cfg.rewards.sigma_rew_neg = 0.02
@@ -258,6 +264,7 @@ def _configure_zgwsarm_rewards(cfg):
 
     cfg.rewards.soft_dof_pos_limit = 0.9
     cfg.rewards.soft_dof_pos_limit_arm = 0.9
+    cfg.rewards.soft_abad_pos_limit = 0.70
     cfg.rewards.soft_action_limit = 3.0
     cfg.rewards.stand_still_command_threshold = 0.10
     cfg.rewards.soft_torque_limit_leg = 1.0
@@ -286,14 +293,17 @@ def _configure_zgwsarm_rewards(cfg):
     # while a persistently unloaded/lifted wheel is penalized.
     cfg.rewards.wheel_contact_force_threshold = 5.0
     cfg.rewards.wheel_min_support_force = 20.0
-    # The default-pose wheel centers are approximately +/-0.341 m in base X.
-    # These soft ranges allow suspension motion but reject folded or overly
-    # extended legs. The same reward also softly aligns each left/right pair.
+    # The loaded zero-action stance is about +/-0.21 m in base Y. Keep each
+    # front/rear pair centered with a 4 cm deadband and allow a broad 0.32--0.50
+    # m track width. These are task-space costs, not joint equality constraints.
     cfg.rewards.wheel_support_front_x_range = [0.25, 0.45]
     cfg.rewards.wheel_support_rear_x_range = [-0.45, -0.25]
-    cfg.rewards.wheel_support_right_y_max = -0.12
-    cfg.rewards.wheel_support_left_y_min = 0.12
+    cfg.rewards.wheel_support_track_width_range = [0.32, 0.50]
+    cfg.rewards.wheel_support_center_y_deadband = 0.04
     cfg.rewards.wheel_support_geometry_scale = 0.10
+    # Relative wheel-load deviations inside 25% of the four-wheel mean are
+    # free. Larger imbalance is normalized by the same tolerance.
+    cfg.rewards.wheel_support_load_balance_tolerance = 0.25
     cfg.rewards.wheel_lateral_slip_scale = 0.25
     cfg.rewards.wheel_rolling_error_scale = 0.25
 
@@ -426,6 +436,7 @@ def _validate_zgwsarm_config(cfg):
     for name in (
         "wheel_support_front_x_range",
         "wheel_support_rear_x_range",
+        "wheel_support_track_width_range",
     ):
         value_range = getattr(cfg.rewards, name)
         if len(value_range) != 2 or value_range[0] > value_range[1]:
@@ -437,11 +448,39 @@ def _validate_zgwsarm_config(cfg):
         "wheel_contact_force_threshold",
         "wheel_min_support_force",
         "wheel_support_geometry_scale",
+        "wheel_support_load_balance_tolerance",
         "wheel_lateral_slip_scale",
         "wheel_rolling_error_scale",
     ):
         if getattr(cfg.rewards, name) <= 0.0:
             raise ValueError(f"ZGWSARM rewards.{name} must be positive")
+    if cfg.rewards.wheel_support_center_y_deadband < 0.0:
+        raise ValueError(
+            "ZGWSARM rewards.wheel_support_center_y_deadband must be "
+            "non-negative"
+        )
+    if not 0.0 < cfg.rewards.soft_abad_pos_limit <= 1.0:
+        raise ValueError(
+            "ZGWSARM rewards.soft_abad_pos_limit must lie in (0, 1]"
+        )
+    if cfg.rewards.soft_abad_pos_limit > cfg.rewards.soft_dof_pos_limit:
+        raise ValueError(
+            "ZGWSARM ABAD soft limit must not be looser than the general "
+            "leg soft limit"
+        )
+    # Reward aggregation is a task tuning choice. Positive clipping, Ji22,
+    # and fully signed rewards are all supported by the shared reward loop;
+    # only enabling both positive-only modes at once is ambiguous because the
+    # first branch would silently shadow Ji22.
+    if (
+        cfg.rewards.only_positive_rewards
+        and cfg.rewards.only_positive_rewards_ji22_style
+    ):
+        raise ValueError(
+            "ZGWSARM reward aggregation modes are mutually exclusive: "
+            "enable only one of only_positive_rewards and "
+            "only_positive_rewards_ji22_style"
+        )
     for name in (
         "ee_sphe_radius",
         "ee_sphe_pitch",

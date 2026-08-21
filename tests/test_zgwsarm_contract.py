@@ -203,6 +203,9 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual([60.0] * 4, cfg.commands.p_gains_wheels)
         self.assertEqual([0.2] * 4, cfg.commands.d_gains_wheels)
         self.assertTrue(cfg.rewards.only_positive_rewards)
+        self.assertFalse(cfg.rewards.only_positive_rewards_ji22_style)
+        self.assertEqual(0.02, cfg.rewards.sigma_rew_neg)
+        self.assertEqual(0.70, cfg.rewards.soft_abad_pos_limit)
         self.assertEqual("yaw", cfg.rewards.force_command_frame)
         self.assertEqual(0.5, cfg.rewards.manip_ori_tracking_sigma)
         self.assertEqual(
@@ -235,10 +238,21 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.0, cfg.reward_scales.feet_clearance_cmd)
         self.assertLess(cfg.reward_scales.wheel_contact_consistency, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_load, 0.0)
+        self.assertLess(cfg.reward_scales.wheel_support_load_balance, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_geometry, 0.0)
         self.assertLess(cfg.reward_scales.wheel_lateral_slip, 0.0)
         self.assertLess(cfg.reward_scales.wheel_rolling_consistency, 0.0)
         self.assertLess(cfg.reward_scales.stance_posture, 0.0)
+        self.assertEqual(-2.0, cfg.reward_scales.stance_posture)
+        self.assertEqual(-2.0, cfg.reward_scales.dof_pos_limits_leg)
+        self.assertEqual(-2.0, cfg.reward_scales.abad_pos_limits)
+        self.assertEqual(
+            [0.32, 0.50], cfg.rewards.wheel_support_track_width_range
+        )
+        self.assertEqual(0.04, cfg.rewards.wheel_support_center_y_deadband)
+        self.assertEqual(
+            0.25, cfg.rewards.wheel_support_load_balance_tolerance
+        )
         self.assertIn("BASE_LINK", cfg.asset.terminate_after_contacts_on)
         self.assertIn("ABAD_LINK", cfg.asset.terminate_after_contacts_on)
         self.assertIn("HIP_LINK", cfg.asset.terminate_after_contacts_on)
@@ -806,10 +820,11 @@ class ZGWSARMContractTests(unittest.TestCase):
                 ),
                 rewards=SimpleNamespace(
                     wheel_min_support_force=20.0,
+                    wheel_support_load_balance_tolerance=0.25,
                     wheel_support_front_x_range=[0.25, 0.45],
                     wheel_support_rear_x_range=[-0.45, -0.25],
-                    wheel_support_right_y_max=-0.12,
-                    wheel_support_left_y_min=0.12,
+                    wheel_support_track_width_range=[0.32, 0.50],
+                    wheel_support_center_y_deadband=0.04,
                     wheel_support_geometry_scale=0.10,
                     wheel_lateral_slip_scale=0.25,
                     wheel_rolling_error_scale=0.25,
@@ -824,7 +839,11 @@ class ZGWSARMContractTests(unittest.TestCase):
             rewards._reward_wheel_support_load(), torch.tensor([0.25])
         )
         torch.testing.assert_close(
-            rewards._reward_wheel_support_geometry(), torch.tensor([0.144])
+            rewards._reward_wheel_support_load_balance(),
+            torch.tensor([7.0 / 3.0]),
+        )
+        torch.testing.assert_close(
+            rewards._reward_wheel_support_geometry(), torch.tensor([0.18])
         )
         torch.testing.assert_close(
             rewards._reward_wheel_lateral_slip(), torch.tensor([1.0 / 3.0])
@@ -850,8 +869,8 @@ class ZGWSARMContractTests(unittest.TestCase):
                 rewards=SimpleNamespace(
                     wheel_support_front_x_range=[0.25, 0.45],
                     wheel_support_rear_x_range=[-0.45, -0.25],
-                    wheel_support_right_y_max=-0.12,
-                    wheel_support_left_y_min=0.12,
+                    wheel_support_track_width_range=[0.32, 0.50],
+                    wheel_support_center_y_deadband=0.04,
                     wheel_support_geometry_scale=0.10,
                 ),
             ),
@@ -864,6 +883,57 @@ class ZGWSARMContractTests(unittest.TestCase):
         torch.testing.assert_close(
             rewards._reward_wheel_support_geometry(),
             torch.tensor([expected]),
+        )
+
+    def test_wheel_support_geometry_penalizes_pair_y_center_and_width(self):
+        state = {
+            "positions_base": torch.tensor(
+                [[[0.34, -0.10, -0.5], [0.34, 0.30, -0.5],
+                  [-0.34, -0.10, -0.5], [-0.34, 0.10, -0.5]]]
+            )
+        }
+        env = SimpleNamespace(
+            get_wheel_kinematics=lambda: state,
+            cfg=SimpleNamespace(
+                asset=SimpleNamespace(
+                    wheel_dof_names=list(WHEEL_DOF_NAMES)
+                ),
+                rewards=SimpleNamespace(
+                    wheel_support_front_x_range=[0.25, 0.45],
+                    wheel_support_rear_x_range=[-0.45, -0.25],
+                    wheel_support_track_width_range=[0.32, 0.50],
+                    wheel_support_center_y_deadband=0.04,
+                    wheel_support_geometry_scale=0.10,
+                ),
+            ),
+        )
+
+        # Front center is +0.10 m: 0.06 m outside the deadband. Rear width is
+        # 0.20 m: 0.12 m below the permitted range. Ten terms are averaged.
+        expected = (0.6 ** 2 + 1.2 ** 2) / 10.0
+        torch.testing.assert_close(
+            ZGWSARMRewards(env)._reward_wheel_support_geometry(),
+            torch.tensor([expected]),
+        )
+
+    def test_abad_soft_limit_activates_before_the_hard_limit(self):
+        env = SimpleNamespace(
+            abad_dof_indices=torch.tensor([0, 1]),
+            dof_pos=torch.tensor([[0.0, -0.40], [0.0, 0.0]]),
+            joint_pos_target=torch.tensor([[0.0, 0.0], [0.0, -0.40]]),
+            dof_pos_hard_limits=torch.tensor(
+                [[-0.697, 0.523], [-0.523, 0.697]]
+            ),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(soft_abad_pos_limit=0.70)
+            ),
+        )
+
+        # The 70% soft intervals are [-0.514, 0.340] and [-0.340, 0.514].
+        # Only the left ABAD target/position at -0.40 exceeds its soft bound.
+        reward = ZGWSARMRewards(env)._reward_abad_pos_limits()
+        torch.testing.assert_close(
+            reward, torch.tensor([0.06, 0.06]), atol=1e-6, rtol=0.0
         )
 
     def test_reset_reason_tensors_report_individual_and_overlapping_causes(self):

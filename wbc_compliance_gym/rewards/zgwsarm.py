@@ -35,10 +35,6 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
     def _legs(self):
         return self.env.leg_dof_indices
 
-    @property
-    def _abad(self):
-        return self.env.abad_dof_indices
-
     def _ee_position_error_squared(self):
         radius = self.env.commands[:, INDEX_EE_POS_RADIUS_CMD : INDEX_EE_POS_RADIUS_CMD + 1]
         pitch = self.env.commands[:, INDEX_EE_POS_PITCH_CMD : INDEX_EE_POS_PITCH_CMD + 1]
@@ -161,24 +157,12 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         ).clip(min=0.0)
         return torch.mean(torch.square(shortfall), dim=1)
 
-    def _reward_wheel_support_load_balance(self):
-        """Penalize large relative load imbalance with a configurable deadband."""
-        normal_forces = self.env.get_wheel_kinematics()["normal_forces"]
-        mean_force = normal_forces.mean(dim=1, keepdim=True).clamp(min=1.0)
-        tolerance = float(
-            self.env.cfg.rewards.wheel_support_load_balance_tolerance
-        )
-        relative_excess = (
-            torch.abs(normal_forces - mean_force) / mean_force - tolerance
-        ).clip(min=0.0)
-        return torch.mean(torch.square(relative_excess / tolerance), dim=1)
-
     def _reward_wheel_support_geometry(self):
         positions = self.env.get_wheel_kinematics()["positions_base"]
         scale = float(self.env.cfg.rewards.wheel_support_geometry_scale)
         longitudinal = []
+        lateral = []
         x_by_wheel = {}
-        y_by_wheel = {}
         for wheel_index, dof_name in enumerate(
             self.env.cfg.asset.wheel_dof_names
         ):
@@ -186,7 +170,6 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             x = positions[:, wheel_index, 0]
             y = positions[:, wheel_index, 1]
             x_by_wheel[wheel_name] = x
-            y_by_wheel[wheel_name] = y
             if wheel_name.startswith("F"):
                 x_range = self.env.cfg.rewards.wheel_support_front_x_range
             else:
@@ -195,40 +178,26 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
                 (float(x_range[0]) - x).clip(min=0.0),
                 (x - float(x_range[1])).clip(min=0.0),
             )
+            if wheel_name.endswith("R"):
+                y_error = (
+                    y - self.env.cfg.rewards.wheel_support_right_y_max
+                ).clip(min=0.0)
+            else:
+                y_error = (
+                    self.env.cfg.rewards.wheel_support_left_y_min - y
+                ).clip(min=0.0)
             longitudinal.append(x_error)
+            lateral.append(y_error)
 
-        # Pair-wise task-space costs remain soft, so independent joint motion
-        # is still available for terrain, turning, and arm-load compensation.
+        # Only constrain longitudinal landing-point symmetry. This remains a
+        # soft cost, so independent leg motion is still available for rough
+        # terrain, turning, and arm-load compensation.
         paired_longitudinal = [
             x_by_wheel["FAR"] - x_by_wheel["FBL"],
             x_by_wheel["RAR"] - x_by_wheel["RBL"],
         ]
-        center_deadband = float(
-            self.env.cfg.rewards.wheel_support_center_y_deadband
-        )
-        width_range = self.env.cfg.rewards.wheel_support_track_width_range
-        paired_lateral_center = []
-        paired_track_width = []
-        for right_name, left_name in (("FAR", "FBL"), ("RAR", "RBL")):
-            center_y = 0.5 * (
-                y_by_wheel[right_name] + y_by_wheel[left_name]
-            )
-            paired_lateral_center.append(
-                (torch.abs(center_y) - center_deadband).clip(min=0.0)
-            )
-            track_width = y_by_wheel[left_name] - y_by_wheel[right_name]
-            paired_track_width.append(
-                torch.maximum(
-                    (float(width_range[0]) - track_width).clip(min=0.0),
-                    (track_width - float(width_range[1])).clip(min=0.0),
-                )
-            )
         errors = torch.stack(
-            longitudinal
-            + paired_longitudinal
-            + paired_lateral_center
-            + paired_track_width,
-            dim=1,
+            longitudinal + lateral + paired_longitudinal, dim=1
         ) / scale
         return torch.mean(torch.square(errors), dim=1)
 
@@ -337,23 +306,6 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         # cfg.rewards.soft_dof_pos_limit.
         lower = self.env.dof_pos_limits[self._legs, 0]
         upper = self.env.dof_pos_limits[self._legs, 1]
-        position_excess = -(positions - lower).clip(max=0.0)
-        position_excess += (positions - upper).clip(min=0.0)
-        target_excess = -(targets - lower).clip(max=0.0)
-        target_excess += (targets - upper).clip(min=0.0)
-        return torch.sum(position_excess + target_excess, dim=1)
-
-    def _reward_abad_pos_limits(self):
-        """Apply an earlier soft barrier to the narrow ABAD joint ranges."""
-        positions = self.env.dof_pos[:, self._abad]
-        targets = self.env.joint_pos_target[:, self._abad]
-        hard_lower = self.env.dof_pos_hard_limits[self._abad, 0]
-        hard_upper = self.env.dof_pos_hard_limits[self._abad, 1]
-        midpoint = 0.5 * (hard_lower + hard_upper)
-        half_span = 0.5 * (hard_upper - hard_lower)
-        soft_fraction = float(self.env.cfg.rewards.soft_abad_pos_limit)
-        lower = midpoint - soft_fraction * half_span
-        upper = midpoint + soft_fraction * half_span
         position_excess = -(positions - lower).clip(max=0.0)
         position_excess += (positions - upper).clip(min=0.0)
         target_excess = -(targets - lower).clip(max=0.0)

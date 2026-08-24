@@ -4,6 +4,8 @@ from pathlib import Path
 
 from wbc_compliance_rl.utils.deployment_bundle import (
     COMMAND_NAMES,
+    COMMAND_RANGE_FIELDS,
+    _command_ranges,
     _format_flat,
     _parse_urdf_contract,
 )
@@ -36,6 +38,27 @@ class MujocoDeploymentTest(unittest.TestCase):
             "joint1", "joint2", "joint3", "joint4", "joint5",
             "joint6", "jointGripper",
         ])
+
+    def test_deployment_exports_independent_force_component_ranges(self):
+        cfg = {
+            "commands": {
+                active: [0.0, 0.0]
+                for active, _ in COMMAND_RANGE_FIELDS
+                if active is not None
+            },
+            "domain_rand": {"max_push_force_xyz_gripper": [-70.0, 70.0]},
+        }
+        cfg["commands"].update(
+            ee_force_x=[20.0, 20.0],
+            ee_force_y=[0.0, 0.0],
+            ee_force_z=[-15.0, -15.0],
+        )
+        active, limits = _command_ranges(cfg)
+        self.assertEqual(
+            [[20.0, 20.0], [0.0, 0.0], [-15.0, -15.0]],
+            active[12:15],
+        )
+        self.assertEqual(active[12:15], limits[12:15])
 
     def test_generated_scenes_keep_both_action_contracts(self):
         expected = {"zgwsarm": 22, "b1_z1": 19}

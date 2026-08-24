@@ -61,9 +61,9 @@ COMMAND_RANGE_FIELDS = (
     ("footswing_height_range", "limit_footswing_height"),
     ("body_pitch_range", "limit_body_pitch"),
     ("body_roll_range", "limit_body_roll"),
-    (None, None),
-    (None, None),
-    (None, None),
+    ("ee_force_x", "limit_ee_force_x"),
+    ("ee_force_y", "limit_ee_force_y"),
+    ("ee_force_z", "limit_ee_force_z"),
     ("ee_sphe_radius", "limit_ee_sphe_radius"),
     ("ee_sphe_pitch", "limit_ee_sphe_pitch"),
     ("ee_sphe_yaw", "limit_ee_sphe_yaw"),
@@ -134,11 +134,14 @@ def _parse_urdf_contract(path, num_actions):
 
 def _command_ranges(cfg):
     command_cfg = cfg["commands"]
-    force_range = cfg["domain_rand"]["max_push_force_xyz_gripper"]
+    legacy_force_range = cfg["domain_rand"]["max_push_force_xyz_gripper"]
     active, limits = [], []
     for index, (active_name, limit_name) in enumerate(COMMAND_RANGE_FIELDS):
         if 12 <= index <= 14:
-            active_value = limit_value = force_range
+            # New bundles expose independent Cartesian target ranges.  The
+            # fallback keeps export compatible with saved pre-migration configs.
+            active_value = command_cfg.get(active_name, legacy_force_range)
+            limit_value = command_cfg.get(limit_name, active_value)
         elif index == 22:
             active_value = limit_value = [0.0, 1.0]
         else:
@@ -164,8 +167,8 @@ def _command_scales(cfg):
         scales["footswing_height_cmd"],
         scales["body_pitch_cmd"],
         scales["body_roll_cmd"],
-        scales["ee_force_magnitude"],
-        scales["ee_force_magnitude"],
+        scales.get("ee_force_x", scales["ee_force_magnitude"]),
+        scales.get("ee_force_y", scales["ee_force_magnitude"]),
         scales["ee_force_z"],
         scales["ee_sphe_radius_cmd"],
         scales["ee_sphe_pitch_cmd"],

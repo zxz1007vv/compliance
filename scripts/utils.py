@@ -11,7 +11,11 @@ import torch
 
 sys.path.append('../')
 
-from wbc_compliance_gym.commands import validate_control_mode
+from wbc_compliance_gym.commands import (
+    FORCE_COMMAND_AXES,
+    force_command_ranges,
+    validate_control_mode,
+)
 from wbc_compliance_gym.envs import DEFAULT_TASK, register_tasks
 from wbc_compliance_gym.utils.artifacts import (
     load_run_config,
@@ -332,11 +336,26 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     for wrapper in task_spec.wrappers:
         env = wrapper(env)
     env._config_load_info = config_load_info
+    force_ranges = force_command_ranges(
+        cfg.commands,
+        fallback_range=cfg.domain_rand.max_push_force_xyz_gripper,
+    )
+    force_target_ranges = {
+        axis: list(value_range)
+        for axis, value_range in zip(FORCE_COMMAND_AXES, force_ranges)
+    }
     env._evaluation_settings = {
         "control_mode": cfg.commands.hybrid_mode,
         "seed": seed,
         "force_amplitude": force_amplitude,
-        "force_target_range": list(cfg.domain_rand.max_push_force_xyz_gripper),
+        "fix_base": bool(cfg.asset.fix_base_link),
+        "force_target_ranges": force_target_ranges,
+        # Compatibility key for consumers that predate independent XYZ ranges.
+        "force_target_range": (
+            list(force_ranges[0])
+            if all(list(item) == list(force_ranges[0]) for item in force_ranges)
+            else None
+        ),
         "diagnostic_scenario": diagnostic_scenario,
         "diagnostic_lin_vel_x": diagnostic_lin_vel_x,
         "diagnostic_ang_vel_yaw": diagnostic_ang_vel_yaw,

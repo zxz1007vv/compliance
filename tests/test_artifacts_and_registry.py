@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import isaacgym  # noqa: F401 - must precede torch imports in this project.
 
+from scripts.train import apply_task_run_defaults
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.utils.artifacts import (
     load_run_config,
@@ -57,6 +58,33 @@ def train_cfg_factory():
 
 
 class ArtifactsAndRegistryTests(unittest.TestCase):
+    def test_task_resume_defaults_do_not_override_explicit_cli_values(self):
+        train_cfg = ConfigNode(
+            run=ConfigNode(
+                resume=True,
+                resume_run_dir="configured/run",
+                resume_checkpoint=1200,
+            )
+        )
+        configured_args = SimpleNamespace(
+            resume=False,
+            resume_run_dir=None,
+            checkpoint=None,
+        )
+        apply_task_run_defaults(configured_args, train_cfg)
+        self.assertTrue(configured_args.resume)
+        self.assertEqual("configured/run", configured_args.resume_run_dir)
+        self.assertEqual(1200, configured_args.checkpoint)
+
+        cli_args = SimpleNamespace(
+            resume=True,
+            resume_run_dir="cli/run",
+            checkpoint=800,
+        )
+        apply_task_run_defaults(cli_args, train_cfg)
+        self.assertEqual("cli/run", cli_args.resume_run_dir)
+        self.assertEqual(800, cli_args.checkpoint)
+
     def test_checkpoint_resolution_supports_new_and_historical_layouts(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)

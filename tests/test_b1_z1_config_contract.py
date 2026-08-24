@@ -15,7 +15,7 @@ from wbc_compliance_gym.utils.config_utils import config_fingerprint
 
 
 EXPECTED_ENV_CONFIG_SHA256 = (
-    "e05f1682ed01fd52b847ebd14e4cf185de228ede91e9f42bbdf1ecdba53b5f4f"
+    "cf9478b1efa3a3d6eb591b721b2b2e0b175419f5cb101f4b367591e12bf2f427"
 )
 EXPECTED_TRAIN_CONFIG_SHA256 = (
     "3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b"

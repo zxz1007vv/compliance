@@ -34,7 +34,9 @@ from wbc_compliance_gym.commands import (
     INDEX_LIN_VEL_X,
     INDEX_LIN_VEL_Y,
     build_command_curricula,
+    force_command_ranges,
     sample_control_modes,
+    set_force_command_ranges,
 )
 from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg
 from wbc_compliance_gym.envs.base.legged_robot import LeggedRobot
@@ -119,6 +121,23 @@ class EnvironmentStructureContracts(unittest.TestCase):
         cfg.commands.curriculum_type = "UnknownCurriculum"
         with self.assertRaises(ValueError):
             build_command_curricula(cfg.commands)
+
+    def test_cartesian_force_ranges_do_not_filter_the_legacy_curriculum(self):
+        cfg = B1Z1Cfg()
+        set_force_command_ranges(
+            cfg.commands,
+            ([20.0, 20.0], [0.0, 0.0], [-15.0, -15.0]),
+        )
+
+        self.assertEqual(
+            ([20.0, 20.0], [0.0, 0.0], [-15.0, -15.0]),
+            force_command_ranges(cfg.commands),
+        )
+        _, curricula = build_command_curricula(cfg.commands)
+        curriculum = curricula[0]
+        self.assertFalse(np.isnan(curriculum.weights).any())
+        self.assertGreater(curriculum.weights.sum(), 0.0)
+        curriculum.sample(batch_size=8)
 
     def test_control_mode_sampling_matches_legacy_operations(self):
         for mode in ("mixed", "binary"):

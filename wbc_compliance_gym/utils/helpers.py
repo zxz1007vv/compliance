@@ -41,7 +41,9 @@ def get_args():
         help="Resume from this run; implies --resume and overrides latest-run selection",
     )
     parser.add_argument(
-        "--checkpoint", default="latest", help="Checkpoint iteration or 'latest'"
+        "--checkpoint",
+        default=None,
+        help="Checkpoint iteration or 'latest' (default: task config, then latest)",
     )
     parser.add_argument(
         "--logger",

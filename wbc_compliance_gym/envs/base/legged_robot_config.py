@@ -229,12 +229,22 @@ class Cfg(PrefixProto, cli=False):
         num_bins_ee_sphe_yaw = 1 # 
         num_bins_ee_timing = 1 # 
         
+        # Cartesian target-force ranges in the heading-only (base-yaw) frame.
+        # Each component is sampled independently.  Equal ranges are convenient
+        # for training, while play configs may isolate one axis at a time.
+        ee_force_x = [-70, 70]
+        limit_ee_force_x = [-70, 70]
+        ee_force_y = [-70, 70]
+        limit_ee_force_y = [-70, 70]
+        ee_force_z = [-70, 70]
+        limit_ee_force_z = [-70, 70]
+
+        # Deprecated curriculum-era fields.  They remain readable so old saved
+        # configs can still be restored, but no longer define force commands.
         ee_force_magnitude = [-120, 120]
         limit_ee_force_magnitude = [-120, 120]
         num_bins_ee_force_magnitude = 1 
 
-        ee_force_z = [-0.0, 0.0]
-        limit_ee_force_z = [-0.0, 0.0]
         num_bins_ee_force_z = 1 
 
         ee_force_direction_angle = [-np.pi, np.pi]
@@ -451,8 +461,11 @@ class Cfg(PrefixProto, cli=False):
         push_gripper_interval_s = [6.0, 9.0]
         push_gripper_duration_s = [3.0, 4.0] # has to be smaller than push_gripper_interval_s
         # push_gripper_duration_s = [1.0, 3.0] # has to be smaller than push_gripper_interval_s
+        # Deprecated target-range mirror for old configs/tools. New force
+        # targets come from commands.ee_force_x/y/z.
         max_push_force_xyz_gripper = [-70, 70]
         max_push_vel_xyz_gripper = [0.0, 30.0]
+        # Actual Cartesian force clamp used by the virtual spring controller.
         max_push_force_xyz_gripper_freed = [-120, 120]
 
         # Push robot base
@@ -686,9 +699,12 @@ class Cfg(PrefixProto, cli=False):
         ee_sphe_yaw_cmd = 1.3      # -1.9 , 1.9 
         ee_timing_cmd = 2.0        # 1.0, 3.0 # 
         
+        ee_force_x = 0.01
+        ee_force_y = 0.01
+        ee_force_z = 0.01
+        # Deprecated observation-scale aliases retained for old saved configs.
         ee_force_magnitude = 0.01
         ee_force_direction_angle = 0.3
-        ee_force_z = 0.01
 
     class noise(PrefixProto, cli=False):
         add_noise = True

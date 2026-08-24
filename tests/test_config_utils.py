@@ -25,11 +25,13 @@ class ConfigUtilsTests(unittest.TestCase):
             return ConfigNode(
                 commands=ConfigNode(hybrid_mode="binary"),
                 domain_rand=ConfigNode(max_push_force_xyz_gripper=[-70.0, 70.0]),
+                asset=ConfigNode(fix_base_link=False),
             )
 
         def play_cfg_hook(cfg, **kwargs):
             received_overrides.append(dict(kwargs))
             cfg.commands.hybrid_mode = "position"
+            cfg.asset.fix_base_link = kwargs["fix_base"]
             if "control_mode" in kwargs:
                 cfg.commands.hybrid_mode = kwargs["control_mode"]
 
@@ -57,9 +59,13 @@ class ConfigUtilsTests(unittest.TestCase):
             override_env, _ = script_utils.load_env(
                 sim_device="cpu", task_name="dummy", control_mode="force"
             )
+            script_utils.load_env(
+                sim_device="cpu", task_name="dummy", fix_base=True
+            )
 
         self.assertNotIn("control_mode", received_overrides[0])
         self.assertEqual("force", received_overrides[1]["control_mode"])
+        self.assertTrue(received_overrides[2]["fix_base"])
         self.assertEqual("position", default_env.cfg.commands.hybrid_mode)
         self.assertEqual("force", override_env.cfg.commands.hybrid_mode)
 

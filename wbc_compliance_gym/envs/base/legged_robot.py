@@ -18,6 +18,7 @@ from wbc_compliance_gym.commands import (
     INDEX_EE_POS_PITCH_CMD,
     INDEX_EE_POS_RADIUS_CMD,
     INDEX_EE_POS_YAW_CMD,
+    force_command_ranges,
 )
 from wbc_compliance_gym.envs.base.base_task import BaseTask
 from wbc_compliance_gym.utils.cuda_debug import CudaPhysicsDebugger
@@ -1515,12 +1516,17 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if new_selected_env_ids.nelement() > 0:
             self.freed_envs[new_selected_env_ids] = torch.rand(len(new_selected_env_ids), dtype=torch.float, device=self.device,
                                         requires_grad=False) > self.cfg.domain_rand.gripper_forced_prob
-            min_force = cfg.domain_rand.max_push_force_xyz_gripper[0]
-            max_force = cfg.domain_rand.max_push_force_xyz_gripper[1]
-
-            self.force_target[new_selected_env_ids, 0] = torch_rand_float(min_force, max_force, (len(new_selected_env_ids), 1), device=self.device).view(len(new_selected_env_ids))
-            self.force_target[new_selected_env_ids, 1] = torch_rand_float(min_force, max_force, (len(new_selected_env_ids), 1), device=self.device).view(len(new_selected_env_ids))
-            self.force_target[new_selected_env_ids, 2] = torch_rand_float(min_force, max_force, (len(new_selected_env_ids), 1), device=self.device).view(len(new_selected_env_ids))
+            for axis, value_range in enumerate(
+                force_command_ranges(cfg.commands)
+            ):
+                self.force_target[new_selected_env_ids, axis] = (
+                    torch_rand_float(
+                        value_range[0],
+                        value_range[1],
+                        (len(new_selected_env_ids), 1),
+                        device=self.device,
+                    ).view(len(new_selected_env_ids))
+                )
             push_duration = torch_rand_float(cfg.domain_rand.push_duration_gripper_min, cfg.domain_rand.push_duration_gripper_max, (len(new_selected_env_ids), 1), device=self.device).view(len(new_selected_env_ids)) # 4.0/self.dt
             self.push_end_time[new_selected_env_ids] = self.episode_length_buf[new_selected_env_ids] + push_duration
             self.push_duration[new_selected_env_ids] = push_duration
@@ -1970,8 +1976,8 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                                             self.obs_scales.gait_phase_cmd, self.obs_scales.gait_phase_cmd,
                                             self.obs_scales.gait_phase_cmd, self.obs_scales.gait_phase_cmd,
                                             self.obs_scales.footswing_height_cmd, self.obs_scales.body_pitch_cmd,
-                                            self.obs_scales.body_roll_cmd, self.obs_scales.ee_force_magnitude,
-                                            self.obs_scales.ee_force_magnitude, self.obs_scales.ee_force_z,
+                                            self.obs_scales.body_roll_cmd, self.obs_scales.ee_force_x,
+                                            self.obs_scales.ee_force_y, self.obs_scales.ee_force_z,
                                             self.obs_scales.ee_sphe_radius_cmd, self.obs_scales.ee_sphe_pitch_cmd,
                                             self.obs_scales.ee_sphe_yaw_cmd, self.obs_scales.ee_timing_cmd, 
                                             self.obs_scales.end_effector_roll_cmd, self.obs_scales.end_effector_pitch_cmd, 

@@ -2,6 +2,10 @@
 
 import numpy as np
 
+from wbc_compliance_gym.commands import (
+    force_command_ranges,
+    set_force_command_ranges,
+)
 from wbc_compliance_gym.envs.base.compliance_task_config import (
     apply_reward_scales,
     build_compliance_ppo_config,
@@ -119,8 +123,8 @@ def _configure_b1_z1_observations(cfg):
     cfg.obs_scales.ee_sphe_pitch_cmd = 1.0
     cfg.obs_scales.ee_sphe_yaw_cmd = 1.3
     cfg.obs_scales.ee_timing_cmd = 0.1
-    cfg.obs_scales.ee_force_magnitude = 0.01
-    cfg.obs_scales.ee_force_direction_angle = 0.3
+    cfg.obs_scales.ee_force_x = 0.01
+    cfg.obs_scales.ee_force_y = 0.01
     cfg.obs_scales.ee_force_z = 0.01
 
 
@@ -174,10 +178,14 @@ def _configure_b1_z1_commands(cfg):
     cfg.commands.aux_reward_coef_range = [0.0, 0.0]
     cfg.commands.limit_aux_reward_coef = [0.0, 0.0]
 
-    cfg.commands.ee_force_z = [-70, 70]
-    cfg.commands.limit_ee_force_z = [-70, 70]
-    cfg.commands.ee_force_magnitude = [-70, 70]
-    cfg.commands.limit_ee_force_magnitude = [-70, 70]
+    # Cartesian force targets are sampled independently in the base-yaw frame.
+    # Keeping equal training ranges is convenient; play may override each axis.
+    cfg.commands.ee_force_x = [-70.0, 70.0]
+    cfg.commands.limit_ee_force_x = [-70.0, 70.0]
+    cfg.commands.ee_force_y = [-70.0, 70.0]
+    cfg.commands.limit_ee_force_y = [-70.0, 70.0]
+    cfg.commands.ee_force_z = [-70.0, 70.0]
+    cfg.commands.limit_ee_force_z = [-70.0, 70.0]
     cfg.commands.ee_sphe_radius = [0.3, 0.9]
     cfg.commands.limit_ee_sphe_radius = [0.3, 0.9]
     cfg.commands.ee_sphe_pitch = [-2 * np.pi / 5, 2 * np.pi / 5]
@@ -358,6 +366,7 @@ def _configure_b1_z1_terrain_and_control(cfg):
 
 def _validate_b1_z1_config(cfg):
     validate_active_reward_scales(cfg, B1_Z1_REWARD_SCALES)
+    force_command_ranges(cfg.commands)
     if cfg.env.num_actions != 19:
         raise ValueError(f"B1+Z1 requires 19 actions, got {cfg.env.num_actions}")
     expected_observations = (
@@ -434,10 +443,12 @@ def configure_b1_z1_play(
     if seed is not None:
         cfg.commands.curriculum_seed = seed
     if force_amplitude is not None:
-        cfg.domain_rand.max_push_force_xyz_gripper = [
-            -float(force_amplitude),
-            float(force_amplitude),
-        ]
+        force_range = [-float(force_amplitude), float(force_amplitude)]
+        set_force_command_ranges(cfg.commands, force_range)
+        # Retain the legacy field for old deployment metadata and keep the
+        # virtual-spring output limit consistent with the requested test.
+        cfg.domain_rand.max_push_force_xyz_gripper = list(force_range)
+        cfg.domain_rand.max_push_force_xyz_gripper_freed = list(force_range)
 
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False

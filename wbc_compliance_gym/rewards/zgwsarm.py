@@ -121,14 +121,13 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         )
         return torch.square(error)
 
-    def _reward_stance_posture(self):
-        """Regularize leg posture only for the zero-velocity command slice."""
+    def _stationary_command_mask(self):
         command_motion = torch.linalg.norm(self.env.commands[:, :2], dim=1)
         command_motion += torch.abs(self.env.commands[:, 2])
-        standing_command = (
-            command_motion
-            < self.env.cfg.rewards.stand_still_command_threshold
-        )
+        return command_motion < self.env.cfg.rewards.stand_still_command_threshold
+
+    def _reward_stance_posture(self):
+        """Regularize leg posture only for the zero-velocity command slice."""
         posture_error = torch.mean(
             torch.square(
                 self.env.dof_pos[:, self._legs]
@@ -136,7 +135,41 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             ),
             dim=1,
         )
-        return posture_error * standing_command.float()
+        return posture_error * self._stationary_command_mask().float()
+
+    def _reward_stance_symmetry(self):
+        """Prevent one-sided collapse while allowing symmetric crouching."""
+        positions = self.env.get_wheel_kinematics()["positions_base"]
+        positions_by_wheel = {}
+        for wheel_index, dof_name in enumerate(
+            self.env.cfg.asset.wheel_dof_names
+        ):
+            wheel_name = dof_name[: -len("_FOOT_JOINT")]
+            positions_by_wheel[wheel_name] = positions[:, wheel_index]
+
+        lateral_tolerance = float(
+            self.env.cfg.rewards.stance_lateral_symmetry_tolerance
+        )
+        height_tolerance = float(
+            self.env.cfg.rewards.stance_height_symmetry_tolerance
+        )
+        errors = []
+        for right_name, left_name in (("FAR", "FBL"), ("RAR", "RBL")):
+            right = positions_by_wheel[right_name]
+            left = positions_by_wheel[left_name]
+            lateral_error = (
+                torch.abs(right[:, 1] + left[:, 1]) - lateral_tolerance
+            ).clip(min=0.0)
+            height_error = (
+                torch.abs(right[:, 2] - left[:, 2]) - height_tolerance
+            ).clip(min=0.0)
+            errors.extend((lateral_error, height_error))
+
+        scale = float(self.env.cfg.rewards.stance_symmetry_scale)
+        symmetry_error = torch.mean(
+            torch.square(torch.stack(errors, dim=1) / scale), dim=1
+        )
+        return symmetry_error * self._stationary_command_mask().float()
 
     @staticmethod
     def _contact_weighted_mean(values, contact):
@@ -179,19 +212,18 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
                 (x - float(x_range[1])).clip(min=0.0),
             )
             if wheel_name.endswith("R"):
-                y_error = (
-                    y - self.env.cfg.rewards.wheel_support_right_y_max
-                ).clip(min=0.0)
+                y_range = self.env.cfg.rewards.wheel_support_right_y_range
             else:
-                y_error = (
-                    self.env.cfg.rewards.wheel_support_left_y_min - y
-                ).clip(min=0.0)
+                y_range = self.env.cfg.rewards.wheel_support_left_y_range
+            y_error = torch.maximum(
+                (float(y_range[0]) - y).clip(min=0.0),
+                (y - float(y_range[1])).clip(min=0.0),
+            )
             longitudinal.append(x_error)
             lateral.append(y_error)
 
-        # Only constrain longitudinal landing-point symmetry. This remains a
-        # soft cost, so independent leg motion is still available for rough
-        # terrain, turning, and arm-load compensation.
+        # Longitudinal pair alignment remains a soft cost. Lateral and height
+        # pair symmetry are handled separately only for stationary commands.
         paired_longitudinal = [
             x_by_wheel["FAR"] - x_by_wheel["FBL"],
             x_by_wheel["RAR"] - x_by_wheel["RBL"],

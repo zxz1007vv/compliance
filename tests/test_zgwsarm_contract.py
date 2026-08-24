@@ -193,6 +193,14 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(
             [-0.45, -0.25], cfg.rewards.wheel_support_rear_x_range
         )
+        self.assertEqual(
+            [-0.32, -0.12], cfg.rewards.wheel_support_right_y_range
+        )
+        self.assertEqual(
+            [0.12, 0.32], cfg.rewards.wheel_support_left_y_range
+        )
+        self.assertEqual(0.04, cfg.rewards.stance_lateral_symmetry_tolerance)
+        self.assertEqual(0.04, cfg.rewards.stance_height_symmetry_tolerance)
         self.assertEqual(0.05, cfg.diagnostics.hard_limit_margin)
         self.assertIsNone(cfg.diagnostics.zgwsarm_scenario)
         self.assertEqual(0, cfg.asset.default_dof_drive_mode)
@@ -217,13 +225,11 @@ class ZGWSARMContractTests(unittest.TestCase):
             list(ZGWSARM_EE_YAW_RANGE), cfg.commands.ee_sphe_yaw
         )
         self.assertEqual(0.15, cfg.commands.ee_min_world_height)
-        self.assertEqual(
-            list(ZGWSARM_FORCE_COMPONENT_RANGE),
-            cfg.commands.ee_force_magnitude,
-        )
-        self.assertEqual(
-            list(ZGWSARM_FORCE_COMPONENT_RANGE), cfg.commands.ee_force_z
-        )
+        for axis in "xyz":
+            self.assertEqual(
+                list(ZGWSARM_FORCE_COMPONENT_RANGE),
+                getattr(cfg.commands, f"ee_force_{axis}"),
+            )
         self.assertEqual(-10.0, cfg.reward_scales.termination)
         self.assertEqual(-5.0, cfg.reward_scales.orientation)
         self.assertEqual(-5.0, cfg.reward_scales.base_height)
@@ -242,6 +248,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertLess(cfg.reward_scales.wheel_rolling_consistency, 0.0)
         self.assertLess(cfg.reward_scales.stance_posture, 0.0)
         self.assertEqual(-0.5, cfg.reward_scales.stance_posture)
+        self.assertEqual(-2.0, cfg.reward_scales.stance_symmetry)
         self.assertEqual(-1.0, cfg.reward_scales.dof_pos_limits_leg)
         self.assertIn("BASE_LINK", cfg.asset.terminate_after_contacts_on)
         self.assertIn("ABAD_LINK", cfg.asset.terminate_after_contacts_on)
@@ -298,24 +305,36 @@ class ZGWSARMContractTests(unittest.TestCase):
             [-45.0, 45.0],
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
         )
+        for axis in "xyz":
+            self.assertEqual(
+                [-45.0, 45.0], getattr(cfg.commands, f"ee_force_{axis}")
+            )
         self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_x)
 
-    def test_play_uses_task_owned_default_position_mode(self):
+    def test_play_can_fix_the_base_for_force_tracking_diagnostics(self):
+        cfg = ZGWSARMComplianceCfg()
+        self.assertFalse(cfg.asset.fix_base_link)
+
+        configure_zgwsarm_compliance_play(cfg, fix_base=True)
+
+        self.assertTrue(cfg.asset.fix_base_link)
+
+    def test_play_uses_task_owned_default_force_mode(self):
         cfg = ZGWSARMComplianceCfg()
         self.assertEqual("binary", cfg.commands.hybrid_mode)
 
         configure_zgwsarm_compliance_play(cfg)
 
-        self.assertEqual("position", cfg.commands.hybrid_mode)
+        self.assertEqual("force", cfg.commands.hybrid_mode)
 
-    def test_play_without_force_override_keeps_training_force_range(self):
+    def test_play_without_force_override_uses_task_owned_xyz_ranges(self):
         cfg = ZGWSARMComplianceCfg()
         configure_zgwsarm_compliance_play(cfg, control_mode="force")
 
-        self.assertEqual(
-            list(ZGWSARM_FORCE_COMPONENT_RANGE),
-            cfg.domain_rand.max_push_force_xyz_gripper,
-        )
+        for axis in "xyz":
+            self.assertEqual(
+                [-20.0, 20.0], getattr(cfg.commands, f"ee_force_{axis}")
+            )
         self.assertEqual(
             list(ZGWSARM_FORCE_COMPONENT_RANGE),
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
@@ -336,6 +355,10 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(
             [0.0, 0.0], cfg.domain_rand.max_push_force_xyz_gripper_freed
         )
+        for axis in "xyz":
+            self.assertEqual(
+                [0.0, 0.0], getattr(cfg.commands, f"ee_force_{axis}")
+            )
         expected_dofs = set(LEG_DOF_NAMES + WHEEL_DOF_NAMES + ARM_DOF_NAMES)
         self.assertEqual(expected_dofs, set(cfg.asset.fixed_action_targets))
         self.assertTrue(all(
@@ -397,6 +420,10 @@ class ZGWSARMContractTests(unittest.TestCase):
             list(ZGWSARM_EE_YAW_RANGE), cfg.commands.ee_sphe_yaw
         )
         self.assertEqual([0.0, 0.0], cfg.domain_rand.max_push_force_xyz_gripper)
+        for axis in "xyz":
+            self.assertEqual(
+                [0.0, 0.0], getattr(cfg.commands, f"ee_force_{axis}")
+            )
 
     def test_diagnostic_force_scenario_supports_low_and_full_load(self):
         self.assertEqual(
@@ -412,6 +439,10 @@ class ZGWSARMContractTests(unittest.TestCase):
             )
             expected = [-amplitude, amplitude]
             self.assertEqual("force", cfg.commands.hybrid_mode)
+            for axis in "xyz":
+                self.assertEqual(
+                    expected, getattr(cfg.commands, f"ee_force_{axis}")
+                )
             self.assertEqual(
                 expected, cfg.domain_rand.max_push_force_xyz_gripper
             )
@@ -509,6 +540,21 @@ class ZGWSARMContractTests(unittest.TestCase):
             "zgwsarm_compliance", ZGWSARMComplianceCfgPPO().run.task_name
         )
         self.assertIs(ZGWSARMRewards, REWARD_CONTAINERS["ZGWSARMRewards"])
+
+    def test_training_launch_defaults_are_owned_by_zgwsarm_config(self):
+        cfg = ZGWSARMComplianceCfgPPO()
+
+        self.assertEqual(48, cfg.runner.num_steps_per_env)
+        self.assertEqual(5000, cfg.runner.max_iterations)
+        self.assertEqual(400, cfg.runner.save_interval)
+        self.assertEqual(0, cfg.runner.save_video_interval)
+        self.assertEqual(1, cfg.runner.log_freq)
+        self.assertEqual(1.0e-3, cfg.algorithm.learning_rate)
+        self.assertEqual(0.005, cfg.algorithm.entropy_coef)
+        self.assertEqual("wbc_release", cfg.run.training_name)
+        self.assertFalse(cfg.run.resume)
+        self.assertIsNone(cfg.run.resume_run_dir)
+        self.assertEqual("latest", cfg.run.resume_checkpoint)
 
     def test_reward_container_does_not_inherit_b1_gait_semantics(self):
         self.assertTrue(issubclass(ZGWSARMRewards, WholeBodyComplianceRewards))
@@ -705,6 +751,41 @@ class ZGWSARMContractTests(unittest.TestCase):
         reward = ZGWSARMRewards(env)._reward_stance_posture()
         torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]))
 
+    def test_stance_symmetry_rejects_one_sided_collapse_but_allows_crouching(self):
+        symmetric = [
+            [0.35, -0.20, -0.40], [0.35, 0.20, -0.40],
+            [-0.35, -0.20, -0.40], [-0.35, 0.20, -0.40],
+        ]
+        asymmetric = [
+            [0.35, -0.10, -0.50], [0.35, 0.30, -0.35],
+            [-0.35, -0.20, -0.40], [-0.35, 0.20, -0.40],
+        ]
+        state = {
+            "positions_base": torch.tensor(
+                [symmetric, asymmetric, asymmetric], dtype=torch.float
+            )
+        }
+        env = SimpleNamespace(
+            commands=torch.tensor(
+                [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]
+            ),
+            get_wheel_kinematics=lambda: state,
+            cfg=SimpleNamespace(
+                asset=SimpleNamespace(wheel_dof_names=list(WHEEL_DOF_NAMES)),
+                rewards=SimpleNamespace(
+                    stand_still_command_threshold=0.1,
+                    stance_lateral_symmetry_tolerance=0.04,
+                    stance_height_symmetry_tolerance=0.04,
+                    stance_symmetry_scale=0.10,
+                ),
+            ),
+        )
+
+        reward = ZGWSARMRewards(env)._reward_stance_symmetry()
+        torch.testing.assert_close(
+            reward, torch.tensor([0.0, 0.9425, 0.0])
+        )
+
     def test_leg_soft_limit_penalizes_policy_target_before_hard_limit(self):
         env = SimpleNamespace(
             leg_dof_indices=torch.tensor([0]),
@@ -820,8 +901,8 @@ class ZGWSARMContractTests(unittest.TestCase):
                     wheel_min_support_force=20.0,
                     wheel_support_front_x_range=[0.25, 0.45],
                     wheel_support_rear_x_range=[-0.45, -0.25],
-                    wheel_support_right_y_max=-0.12,
-                    wheel_support_left_y_min=0.12,
+                    wheel_support_right_y_range=[-0.32, -0.12],
+                    wheel_support_left_y_range=[0.12, 0.32],
                     wheel_support_geometry_scale=0.10,
                     wheel_lateral_slip_scale=0.25,
                     wheel_rolling_error_scale=0.25,
@@ -862,8 +943,8 @@ class ZGWSARMContractTests(unittest.TestCase):
                 rewards=SimpleNamespace(
                     wheel_support_front_x_range=[0.25, 0.45],
                     wheel_support_rear_x_range=[-0.45, -0.25],
-                    wheel_support_right_y_max=-0.12,
-                    wheel_support_left_y_min=0.12,
+                    wheel_support_right_y_range=[-0.32, -0.12],
+                    wheel_support_left_y_range=[0.12, 0.32],
                     wheel_support_geometry_scale=0.10,
                 ),
             ),
@@ -875,6 +956,35 @@ class ZGWSARMContractTests(unittest.TestCase):
         expected = (2 * 0.5 ** 2 + 2 * 1.6 ** 2) / 10.0
         torch.testing.assert_close(
             rewards._reward_wheel_support_geometry(),
+            torch.tensor([expected]),
+        )
+
+    def test_wheel_support_geometry_penalizes_outward_splay(self):
+        state = {
+            "positions_base": torch.tensor(
+                [[[0.35, -0.40, -0.4], [0.35, 0.40, -0.4],
+                  [-0.35, -0.40, -0.4], [-0.35, 0.40, -0.4]]]
+            )
+        }
+        env = SimpleNamespace(
+            get_wheel_kinematics=lambda: state,
+            cfg=SimpleNamespace(
+                asset=SimpleNamespace(wheel_dof_names=list(WHEEL_DOF_NAMES)),
+                rewards=SimpleNamespace(
+                    wheel_support_front_x_range=[0.25, 0.45],
+                    wheel_support_rear_x_range=[-0.45, -0.25],
+                    wheel_support_right_y_range=[-0.32, -0.12],
+                    wheel_support_left_y_range=[0.12, 0.32],
+                    wheel_support_geometry_scale=0.10,
+                ),
+            ),
+        )
+
+        # Four wheels exceed their lateral bounds by 0.08 m. The geometry
+        # vector contains four X, four Y, and two paired-X terms.
+        expected = 4 * 0.8 ** 2 / 10.0
+        torch.testing.assert_close(
+            ZGWSARMRewards(env)._reward_wheel_support_geometry(),
             torch.tensor([expected]),
         )
 

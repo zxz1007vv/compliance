@@ -17,9 +17,11 @@ from isaacgym.torch_utils import (
 from tqdm import tqdm
 
 from wbc_compliance_gym.commands import (
+    FORCE_COMMAND_AXES,
     INDEX_EE_FORCE_X,
     INDEX_EE_FORCE_Z,
     VALID_CONTROL_MODES,
+    force_command_ranges,
 )
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
@@ -97,6 +99,11 @@ def parse_args():
         "--force-amplitude",
         type=float,
         help="Override the force-target sampling range with [-A, A] N",
+    )
+    parser.add_argument(
+        "--fix-base",
+        action="store_true",
+        help="Fix the robot base link to isolate arm/force tracking",
     )
     parser.add_argument(
         "--output",
@@ -426,7 +433,7 @@ def print_zgwsarm_diagnostics(metrics):
 
 def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
          viewer=True, record_video=False, print_every=100, control_mode=None,
-         seed=1, force_amplitude=None, output=None, diagnostic_scenario=None,
+         seed=1, force_amplitude=None, fix_base=False, output=None, diagnostic_scenario=None,
          diagnostic_lin_vel_x=None, diagnostic_ang_vel_yaw=None):
     if num_envs < 1:
         raise ValueError("num_envs must be at least 1")
@@ -467,6 +474,7 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         control_mode=control_mode,
         seed=seed,
         force_amplitude=force_amplitude,
+        fix_base=fix_base,
         diagnostic_scenario=diagnostic_scenario,
         diagnostic_lin_vel_x=diagnostic_lin_vel_x,
         diagnostic_ang_vel_yaw=diagnostic_ang_vel_yaw,
@@ -475,7 +483,7 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
     effective_mode = env.cfg.commands.hybrid_mode
     print(
         f"Evaluation settings: mode={effective_mode}, seed={seed}, "
-        f"num_envs={num_envs}, steps={steps}, "
+        f"num_envs={num_envs}, steps={steps}, fix_base={fix_base}, "
         f"diagnostic_scenario={diagnostic_scenario or 'none'}"
     )
     cameras = []
@@ -516,6 +524,14 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
     print_rollout_metrics(metrics, steps, steps, final=True)
     print_zgwsarm_diagnostics(metrics)
 
+    force_ranges = force_command_ranges(
+        env.cfg.commands,
+        fallback_range=env.cfg.domain_rand.max_push_force_xyz_gripper,
+    )
+    force_target_ranges = {
+        axis: list(value_range)
+        for axis, value_range in zip(FORCE_COMMAND_AXES, force_ranges)
+    }
     evaluation = {
         "schema_version": 1,
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -530,11 +546,18 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
             "num_envs": num_envs,
             "steps": steps,
             "force_amplitude": force_amplitude,
+            "fix_base": bool(env.cfg.asset.fix_base_link),
             "diagnostic_scenario": diagnostic_scenario,
             "diagnostic_lin_vel_x": diagnostic_lin_vel_x,
             "diagnostic_ang_vel_yaw": diagnostic_ang_vel_yaw,
-            "force_target_range": list(
-                env.cfg.domain_rand.max_push_force_xyz_gripper
+            "force_target_ranges": force_target_ranges,
+            "force_target_range": (
+                list(force_ranges[0])
+                if all(
+                    list(item) == list(force_ranges[0])
+                    for item in force_ranges
+                )
+                else None
             ),
         },
         "config_load": getattr(env, "_config_load_info", {}),
@@ -582,6 +605,7 @@ if __name__ == "__main__":
             control_mode=args.control_mode,
             seed=args.seed,
             force_amplitude=args.force_amplitude,
+            fix_base=args.fix_base,
             diagnostic_scenario=args.diagnostic_scenario,
             diagnostic_lin_vel_x=args.diagnostic_lin_vel_x,
             diagnostic_ang_vel_yaw=args.diagnostic_ang_vel_yaw,

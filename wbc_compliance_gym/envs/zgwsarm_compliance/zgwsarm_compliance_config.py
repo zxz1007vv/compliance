@@ -1,5 +1,9 @@
 """Independent training and play configuration for ZGWSARM compliance."""
 
+from wbc_compliance_gym.commands import (
+    force_command_ranges,
+    set_force_command_ranges,
+)
 from wbc_compliance_gym.envs.base.compliance_task_config import (
     apply_reward_scales,
     build_compliance_ppo_config,
@@ -28,11 +32,13 @@ ZGWSARM_REWARD_SCALES = {
     "lin_vel_z": -4.0,
     # Only active for near-zero base commands, so locomotion remains free.
     "stance_posture": -0.5,
+    # Reject one-sided arm-load collapse while allowing symmetric crouching.
+    "stance_symmetry": -2.0,
 
     # 轮足支撑
     "wheel_contact_consistency": -2.0,
     "wheel_support_load": -1.0,
-    # Soft X bounds and front/rear pair alignment; no joint equality binding.
+    # Soft footprint bounds and front/rear X alignment; no joint equality binding.
     "wheel_support_geometry": -2.0,
     "wheel_lateral_slip": -0.5,
     "wheel_rolling_consistency": -0.5,
@@ -129,19 +135,20 @@ def _configure_zgwsarm_rewards(cfg):
     # while a persistently unloaded/lifted wheel is penalized.
     cfg.rewards.wheel_contact_force_threshold = 5.0
     cfg.rewards.wheel_min_support_force = 20.0
-    # Preserve the previously trainable footprint limits. X pair alignment is
-    # soft; Y only prevents inward collapse and does not constrain outward
-    # suspension travel or pair-center motion.
+    # Soft footprint limits. The lateral upper bounds prevent an outward-splay
+    # solution while retaining enough width variation for load compensation.
     cfg.rewards.wheel_support_front_x_range = [0.25, 0.45]
     cfg.rewards.wheel_support_rear_x_range = [-0.45, -0.25]
-    cfg.rewards.wheel_support_right_y_max = -0.12
-    cfg.rewards.wheel_support_left_y_min = 0.12
+    cfg.rewards.wheel_support_right_y_range = [-0.32, -0.12]
+    cfg.rewards.wheel_support_left_y_range = [0.12, 0.32]
     cfg.rewards.wheel_support_geometry_scale = 0.10
+    cfg.rewards.stance_lateral_symmetry_tolerance = 0.04
+    cfg.rewards.stance_height_symmetry_tolerance = 0.04  #左右支撑高度相差容忍高度
+    cfg.rewards.stance_symmetry_scale = 0.10
     cfg.rewards.wheel_lateral_slip_scale = 0.25
     cfg.rewards.wheel_rolling_error_scale = 0.25
 
     apply_reward_scales(cfg, ZGWSARM_REWARD_SCALES)
-
 
 
 def _configure_zgwsarm_environment(cfg):
@@ -159,6 +166,35 @@ def _configure_zgwsarm_environment(cfg):
         zgwsarm_scenario=None,
         hard_limit_margin=0.05,
     )
+
+
+def _configure_zgwsarm_training(cfg):
+    """Task-owned training defaults; explicit CLI arguments override these."""
+    # Rollout length and training schedule.
+    cfg.runner.num_steps_per_env = 48
+    cfg.runner.max_iterations = 10000
+    cfg.runner.save_interval = 500
+    cfg.runner.save_video_interval = 0
+    cfg.runner.log_freq = 1
+
+    # Common PPO tuning parameters.
+    cfg.algorithm.learning_rate = 1.0e-3
+    cfg.algorithm.adaptation_module_learning_rate = 1.0e-3
+    cfg.algorithm.entropy_coef = 0.005
+    cfg.algorithm.num_learning_epochs = 5
+    cfg.algorithm.num_mini_batches = 4
+
+    # Run identity. ``--run-name`` overrides training_name for one launch.
+    cfg.run.training_name = "wbc_release"
+    cfg.run.experiment_group = "wbc"
+    cfg.run.experiment_job_type = "release"
+
+    # Local checkpoint resume. This deliberately does not use
+    # cfg.runner.resume, which is the legacy remote W&B resume path.
+    cfg.run.resume = False
+    cfg.run.resume_run_dir = None  # None: use the latest local run for this task.
+    cfg.run.resume_checkpoint = "latest"
+    return cfg
 
 
 def _configure_zgwsarm_observations(cfg):
@@ -187,8 +223,8 @@ def _configure_zgwsarm_observations(cfg):
     cfg.obs_scales.ee_sphe_pitch_cmd = 1.0
     cfg.obs_scales.ee_sphe_yaw_cmd = 1.3
     cfg.obs_scales.ee_timing_cmd = 0.1
-    cfg.obs_scales.ee_force_magnitude = 0.01
-    cfg.obs_scales.ee_force_direction_angle = 0.3
+    cfg.obs_scales.ee_force_x = 0.01
+    cfg.obs_scales.ee_force_y = 0.01
     cfg.obs_scales.ee_force_z = 0.01
 
 
@@ -272,15 +308,14 @@ def _configure_zgwsarm_commands(cfg):
     # it does not make ZGWSARM inherit the B1 robot or reward configuration.
     cfg.commands.inverse_IK_door_opening = True
 
-    # Slots 12-14 retain historical force-range names in the shared command
-    # schema.  Keep their compatibility bounds synchronized with the actual
-    # XYZ force sampler configured in domain_rand below.
+    # Cartesian force targets are sampled independently in the base-yaw frame.
+    # Equal training ranges remain concise while play can isolate any axis.
+    cfg.commands.ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
     cfg.commands.ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
     cfg.commands.limit_ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.ee_force_magnitude = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.limit_ee_force_magnitude = list(
-        ZGWSARM_FORCE_COMPONENT_RANGE
-    )
     cfg.commands.ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
     cfg.commands.limit_ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
     cfg.commands.ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
@@ -390,6 +425,7 @@ def _configure_zgwsarm_simulation(cfg):
 
 def _validate_zgwsarm_config(cfg):
     validate_active_reward_scales(cfg, ZGWSARM_REWARD_SCALES)
+    force_command_ranges(cfg.commands)
 
     dof_groups = (
         list(cfg.asset.leg_dof_names)
@@ -427,6 +463,8 @@ def _validate_zgwsarm_config(cfg):
     for name in (
         "wheel_support_front_x_range",
         "wheel_support_rear_x_range",
+        "wheel_support_right_y_range",
+        "wheel_support_left_y_range",
     ):
         value_range = getattr(cfg.rewards, name)
         if len(value_range) != 2 or value_range[0] > value_range[1]:
@@ -438,6 +476,9 @@ def _validate_zgwsarm_config(cfg):
         "wheel_contact_force_threshold",
         "wheel_min_support_force",
         "wheel_support_geometry_scale",
+        "stance_lateral_symmetry_tolerance",
+        "stance_height_symmetry_tolerance",
+        "stance_symmetry_scale",
         "wheel_lateral_slip_scale",
         "wheel_rolling_error_scale",
     ):
@@ -526,8 +567,6 @@ def configure_zgwsarm_compliance_play(
     cfg.terrain.teleport_robots = False
     cfg.terrain.mesh_type = "plane"  # plane requires teleport_robots = False
 
-    # Task-owned play defaults. Edit this block to change normal play behavior.
-    cfg.commands.hybrid_mode = "position"
     cfg.commands.lin_vel_x = [0.0, 0.0]
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
@@ -535,13 +574,20 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.ang_vel_yaw = [0.0, 0.0]
     cfg.commands.limit_vel_yaw = [0.0, 0.0]
 
+    # Task-owned play defaults. Edit this block to change normal play behavior.
+    cfg.commands.hybrid_mode = "force"
     cfg.commands.ee_sphe_radius = [0.40, 0.40]
     cfg.commands.limit_ee_sphe_radius = [0.40, 0.40]
     cfg.commands.ee_sphe_pitch = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
     cfg.commands.ee_sphe_yaw = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
-
+    cfg.commands.ee_force_x = [-20.0, 20.0]
+    cfg.commands.limit_ee_force_x = [-20.0, 20.0]
+    cfg.commands.ee_force_y = [-20.0, 20.0]
+    cfg.commands.limit_ee_force_y = [-20.0, 20.0]
+    cfg.commands.ee_force_z = [-20.0, 20.0]
+    cfg.commands.limit_ee_force_z = [-20.0, 20.0]
 
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False
@@ -567,10 +613,12 @@ def configure_zgwsarm_compliance_play(
             -float(force_amplitude),
             float(force_amplitude),
         ]
+        set_force_command_ranges(cfg.commands, force_range)
+        # Retain the legacy field for old deployment metadata and keep the
+        # virtual-spring output limit consistent with the requested test.
         cfg.domain_rand.max_push_force_xyz_gripper = list(force_range)
         cfg.domain_rand.max_push_force_xyz_gripper_freed = list(force_range)
 
-  
     if diagnostic_scenario is not None:
         configure_zgwsarm_diagnostic_play(
             cfg,
@@ -677,12 +725,14 @@ def configure_zgwsarm_diagnostic_play(
         if amplitude < 0.0:
             raise ValueError("force_amplitude must be non-negative")
         cfg.commands.hybrid_mode = "force"
+        set_force_command_ranges(cfg.commands, [-amplitude, amplitude])
         cfg.domain_rand.max_push_force_xyz_gripper = [-amplitude, amplitude]
         cfg.domain_rand.max_push_force_xyz_gripper_freed = [-amplitude, amplitude]
     else:
         cfg.commands.hybrid_mode = "position"
 
     if scenario != "force":
+        set_force_command_ranges(cfg.commands, [0.0, 0.0])
         cfg.domain_rand.max_push_force_xyz_gripper = [0.0, 0.0]
         cfg.domain_rand.max_push_force_xyz_gripper_freed = [0.0, 0.0]
     return cfg
@@ -697,6 +747,7 @@ class ZGWSARMComplianceCfg(ConfigNode):
 class ZGWSARMComplianceCfgPPO(ConfigNode):
     def __init__(self):
         configured = build_compliance_ppo_config("zgwsarm_compliance")
+        _configure_zgwsarm_training(configured)
         super().__init__(**vars(configured))
 
 

@@ -22,6 +22,24 @@ def configure_env(task_name):
     return task_registry.get_spec(task_name).env_cfg_factory()
 
 
+def apply_task_run_defaults(args, train_cfg):
+    """Apply task-local resume defaults without overriding explicit CLI input."""
+    run_cfg = train_cfg.run
+    explicit_resume = bool(
+        getattr(args, "resume", False)
+        or getattr(args, "resume_run_dir", None)
+    )
+    if not explicit_resume and getattr(run_cfg, "resume", False):
+        args.resume = True
+        args.resume_run_dir = getattr(run_cfg, "resume_run_dir", None)
+        if getattr(args, "checkpoint", None) is None:
+            args.checkpoint = getattr(run_cfg, "resume_checkpoint", "latest")
+
+    if getattr(args, "checkpoint", None) is None:
+        args.checkpoint = "latest"
+    return args
+
+
 def train(args):
     """Compose the selected task and run its registered on-policy runner."""
     if getattr(args, "logger", None):
@@ -31,7 +49,9 @@ def train(args):
     if getattr(args, "list_tasks", False):
         print("\n".join(registry.names()))
         return None
-    registry.get_spec(args.task)
+    task_spec = registry.get_spec(args.task)
+    train_cfg = task_spec.train_cfg_factory()
+    apply_task_run_defaults(args, train_cfg)
 
     resume_run_dir = getattr(args, "resume_run_dir", None)
     if getattr(args, "resume", False) and not resume_run_dir:
@@ -47,7 +67,9 @@ def train(args):
                 f"{saved_task!r}: {resume_run_dir}"
             )
     env, _ = task_registry.make_env(args.task, args=args)
-    runner, train_cfg = task_registry.make_alg_runner(env, args.task, args=args)
+    runner, train_cfg = task_registry.make_alg_runner(
+        env, args.task, args=args, train_cfg=train_cfg
+    )
     try:
         runner.learn(
             num_learning_iterations=train_cfg.runner.max_iterations,

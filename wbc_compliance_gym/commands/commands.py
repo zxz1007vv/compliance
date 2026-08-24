@@ -79,9 +79,9 @@ class CommandDimension:
         return (value_range[0], value_range[1])
 
 
-# The names in positions 12-14 are historical curriculum-grid names.  Their
-# grids intentionally remain fixed at zero while the force subsystem writes
-# XYZ commands into those vector slots during a rollout.
+# Positions 12-14 are written by the force-command generator during a rollout.
+# Keep their command-curriculum cells fixed at zero: force targets have their
+# own ramp/resampling lifecycle and must not filter the legacy command grid.
 COMMAND_SCHEMA = (
     CommandDimension(0, "x_vel", "limit_vel_x", "num_bins_vel_x", "lin_vel_x"),
     CommandDimension(1, "y_vel", "limit_vel_y", "num_bins_vel_y", "lin_vel_y"),
@@ -95,9 +95,9 @@ COMMAND_SCHEMA = (
     CommandDimension(9, "footswing_height", "limit_footswing_height", "num_bins_footswing_height", "footswing_height_range"),
     CommandDimension(10, "body_pitch", "limit_body_pitch", "num_bins_body_pitch", "body_pitch_range"),
     CommandDimension(11, "body_roll", "limit_body_roll", "num_bins_body_roll", "body_roll_range"),
-    CommandDimension(12, "stance_width", active_range_attr="ee_force_magnitude", fixed_curriculum_range=(0, 0, 1)),
-    CommandDimension(13, "stance_length", active_range_attr="ee_force_direction_angle", fixed_curriculum_range=(0, 0, 1)),
-    CommandDimension(14, "aux_reward_coef", active_range_attr="ee_force_z", fixed_curriculum_range=(0, 0, 1)),
+    CommandDimension(12, "stance_width", fixed_curriculum_range=(0, 0, 1), fixed_active_range=(0, 0)),
+    CommandDimension(13, "stance_length", fixed_curriculum_range=(0, 0, 1), fixed_active_range=(0, 0)),
+    CommandDimension(14, "aux_reward_coef", fixed_curriculum_range=(0, 0, 1), fixed_active_range=(0, 0)),
     CommandDimension(15, "ee_sphe_radius", "limit_ee_sphe_radius", "num_bins_ee_sphe_radius", "ee_sphe_radius"),
     CommandDimension(16, "ee_sphe_pitch", "limit_ee_sphe_pitch", "num_bins_ee_sphe_pitch", "ee_sphe_pitch"),
     CommandDimension(17, "ee_sphe_yaw", "limit_ee_sphe_yaw", "num_bins_ee_sphe_yaw", "ee_sphe_yaw"),
@@ -107,6 +107,61 @@ COMMAND_SCHEMA = (
     CommandDimension(21, "end_effector_yaw", "limit_end_effector_yaw", "num_bins_end_effector_yaw", "end_effector_yaw"),
     CommandDimension(22, "force_or_position_mode", fixed_curriculum_range=(0, 1, 1), fixed_active_range=(0, 1)),
 )
+
+
+FORCE_COMMAND_AXES = ("x", "y", "z")
+
+
+def force_command_ranges(command_cfg, *, fallback_range=None):
+    """Return independent [min, max] target-force ranges for X/Y/Z."""
+    ranges = []
+    for axis in FORCE_COMMAND_AXES:
+        name = f"ee_force_{axis}"
+        value_range = getattr(command_cfg, name, fallback_range)
+        if value_range is None:
+            raise AttributeError(f"commands.{name} is required")
+        if len(value_range) != 2 or value_range[0] > value_range[1]:
+            raise ValueError(
+                f"commands.{name} must be an ordered [min, max] pair, "
+                f"got {value_range!r}"
+            )
+        limit_name = f"limit_ee_force_{axis}"
+        limit_range = getattr(command_cfg, limit_name, value_range)
+        if len(limit_range) != 2 or limit_range[0] > limit_range[1]:
+            raise ValueError(
+                f"commands.{limit_name} must be an ordered [min, max] pair, "
+                f"got {limit_range!r}"
+            )
+        if value_range[0] < limit_range[0] or value_range[1] > limit_range[1]:
+            raise ValueError(
+                f"commands.{name}={value_range!r} must lie inside "
+                f"commands.{limit_name}={limit_range!r}"
+            )
+        ranges.append(value_range)
+    return tuple(ranges)
+
+
+def set_force_command_ranges(command_cfg, ranges, *, update_limits=True):
+    """Set X/Y/Z target ranges; a single pair is broadcast to every axis."""
+    if (
+        len(ranges) == 2
+        and all(isinstance(value, (int, float)) for value in ranges)
+    ):
+        ranges = (ranges, ranges, ranges)
+    if len(ranges) != len(FORCE_COMMAND_AXES):
+        raise ValueError("force ranges must be one pair or three XYZ pairs")
+
+    for axis, value_range in zip(FORCE_COMMAND_AXES, ranges):
+        value_range = list(value_range)
+        if len(value_range) != 2 or value_range[0] > value_range[1]:
+            raise ValueError(
+                f"force {axis} range must be an ordered [min, max] pair, "
+                f"got {value_range!r}"
+            )
+        setattr(command_cfg, f"ee_force_{axis}", value_range)
+        if update_limits:
+            setattr(command_cfg, f"limit_ee_force_{axis}", list(value_range))
+    return command_cfg
 
 
 def command_curriculum_ranges(command_cfg):

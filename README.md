@@ -16,6 +16,7 @@ position/force compliance 控制框架。代码来源于
 - `train.py` 必须使用 `--task` 显式选择注册任务
 - `play.py` 必须提供 `--task` 或 `--run-dir`
 - play 指定 task 但不指定 run/checkpoint 时，自动使用该任务的最新 run 和最高编号 checkpoint
+- C++ MuJoCo sim2sim 与 Logitech F710 遥操作入口：`mujoco/`
 
 所有命令均建议在仓库根目录执行：
 
@@ -50,6 +51,19 @@ python -m pip install -e . --no-deps
 python -m unittest discover -s tests -v
 ```
 
+### C++ MuJoCo sim2sim
+
+仓库现已同时提供 `zgwsarm_compliance` 和 `b1_z1_ik` 的 C++ 部署端。它从每个训练
+run 导出精确的 TorchScript、观测/关节/控制合同，支持 F710 位置/力模式遥操作、
+三种接触场景、无界面运行和 MuJoCo 官方 classic `simulate` Viewer。完整依赖、导出、
+构建、手柄映射和运行命令见
+[mujoco/README.md](mujoco/README.md)。
+
+导出策略到 `mujoco/policies/` 后，使用
+`mujoco/build/mujoco_sim --task zgwsarm_compliance` 或
+`mujoco/build/mujoco_sim --task b1_z1_ik` 显式选择任务。机器人 MJCF 路径、
+TorchScript 策略路径、Viewer 和手柄参数均在 `mujoco/config/<task>.yaml` 中修改。
+
 ### 关于 Gym 警告
 
 运行时可能看到：
@@ -71,7 +85,10 @@ learning-compliance/
 │   ├── train.py                 # 训练入口
 │   ├── play.py                  # 本地 checkpoint 评估入口
 │   ├── export_policy.py         # 独立 TorchScript 导出
+│   ├── export_deployment_bundle.py # C++ sim2sim 完整部署包导出
+│   ├── generate_mujoco_models.py # 双任务 MuJoCo 场景生成
 │   └── test.py                  # 无训练权重的仿真检查
+├── mujoco/                       # C++ MuJoCo sim2sim、F710、场景与测试
 ├── wbc_compliance_gym/
 │   ├── envs/
 │   │   ├── base/                # 通用 Isaac Gym 环境与物理流程

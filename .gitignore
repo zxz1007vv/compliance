@@ -2,6 +2,9 @@ wandb
 tmp
 runs
 logs
+/mujoco/build/
+/mujoco/policies/*
+!/mujoco/policies/README.md
 *.pyc
 *.egg-info
 *.mp4

@@ -1,0 +1,59 @@
+# User-editable launcher configuration. Relative paths start from this file.
+schema_version: 1
+task_name: zgwsarm_compliance
+
+paths:
+  repository_root: ../..
+  deployment_bundle: ../policies/zgwsarm
+  scene_path: ../models/zgwsarm/scene_terrain.xml
+  policy_backend: torchscript
+  # An absolute exported policy path, such as .../policy_001200.pt, is also valid.
+  policy_path: ../policies/zgwsarm/policy.pt
+
+runtime:
+  viewer: true
+  realtime: true
+  # 0 runs until the Viewer is closed or Ctrl+C is pressed.
+  steps: 0
+  # 0 disables terminal status output.
+  status_interval_seconds: 1.0
+
+teleoperation:
+  deadzone: 0.10
+  force_limit: 30.0
+  position_rates: [0.20, 0.75, 0.75]
+  wrist_rate: 0.75
+  gripper_rate: 0.75
+
+# A executes current pose -> fold pose -> stand pose with dog-only PD.
+# The arm holds its deployment default with PD until B gives control to policy.
+startup:
+  fold_duration_seconds: 1.0
+  stand_duration_seconds: 1.0
+
+  # FAR, FBL, RAR, RBL; each group is ABAD, HIP, KNEE, FOOT(wheel).
+  dog_joint_names:
+    [FAR_ABAD_JOINT, FAR_HIP_JOINT, FAR_KNEE_JOINT, FAR_FOOT_JOINT,
+     FBL_ABAD_JOINT, FBL_HIP_JOINT, FBL_KNEE_JOINT, FBL_FOOT_JOINT,
+     RAR_ABAD_JOINT, RAR_HIP_JOINT, RAR_KNEE_JOINT, RAR_FOOT_JOINT,
+     RBL_ABAD_JOINT, RBL_HIP_JOINT, RBL_KNEE_JOINT, RBL_FOOT_JOINT]
+  fold_positions:
+    [0.0, 1.4, -2.4, 0.0,
+     0.0, 1.4, -2.4, 0.0,
+     0.0, -1.4, 2.4, 0.0,
+     0.0, -1.4, 2.4, 0.0]
+  stand_positions:
+    [0.0, 0.6, -1.2, 0.0,
+     0.0, 0.6, -1.2, 0.0,
+     0.0, -0.6, 1.2, 0.0,
+     0.0, -0.6, 1.2, 0.0]
+  kp:
+    [90.0, 120.0, 120.0, 60.0,
+     90.0, 120.0, 120.0, 60.0,
+     90.0, 120.0, 120.0, 60.0,
+     90.0, 120.0, 120.0, 60.0]
+  kd:
+    [1.0, 1.0, 1.0, 0.2,
+     1.0, 1.0, 1.0, 0.2,
+     1.0, 1.0, 1.0, 0.2,
+     1.0, 1.0, 1.0, 0.2]

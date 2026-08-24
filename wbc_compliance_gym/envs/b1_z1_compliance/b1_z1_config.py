@@ -398,7 +398,7 @@ def configure_b1_z1_play(
     sample_feasible_commands=False,
     control_only_z1=False,
 ):
-    """Apply evaluation-only overrides to a B1+Z1 task config."""
+    """Apply B1+Z1 play defaults, then explicit caller overrides."""
     cfg.env.num_recording_envs = 1
     cfg.env.num_envs = num_envs
     cfg.env.episode_length_s = 10000
@@ -411,16 +411,8 @@ def configure_b1_z1_play(
     cfg.terrain.teleport_robots = False
     cfg.terrain.mesh_type = "plane"
 
-    if control_mode is not None:
-        cfg.commands.hybrid_mode = control_mode
-    if seed is not None:
-        cfg.commands.curriculum_seed = seed
-    if force_amplitude is not None:
-        cfg.domain_rand.max_push_force_xyz_gripper = [
-            -float(force_amplitude),
-            float(force_amplitude),
-        ]
-
+    # Task-owned play defaults. Edit this block to change normal play behavior.
+    cfg.commands.hybrid_mode = "position"
     cfg.commands.lin_vel_x = [0.0, 0.0]
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
@@ -434,6 +426,18 @@ def configure_b1_z1_play(
     cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
     cfg.commands.ee_sphe_yaw = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
+
+    # Optional caller overrides. ``scripts/play.py`` supplies ``control_mode``
+    # only when --control-mode is explicitly provided.
+    if control_mode is not None:
+        cfg.commands.hybrid_mode = control_mode
+    if seed is not None:
+        cfg.commands.curriculum_seed = seed
+    if force_amplitude is not None:
+        cfg.domain_rand.max_push_force_xyz_gripper = [
+            -float(force_amplitude),
+            float(force_amplitude),
+        ]
 
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False

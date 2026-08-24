@@ -6,6 +6,7 @@ from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import (
     B1_Z1_REWARD_SCALES,
     B1Z1Cfg,
     B1Z1CfgPPO,
+    configure_b1_z1_play,
 )
 from wbc_compliance_gym.envs.base.compliance_task_config import (
     active_reward_scales,
@@ -52,6 +53,18 @@ class B1Z1ConfigContract(unittest.TestCase):
         first.commands.lin_vel_x[0] = -99.0
         self.assertEqual(second.env.num_envs, 4000)
         self.assertEqual(second.commands.lin_vel_x, [-1.0, 1.0])
+
+    def test_play_uses_task_owned_default_and_accepts_cli_style_override(self):
+        default_cfg = B1Z1Cfg()
+        self.assertEqual("binary", default_cfg.commands.hybrid_mode)
+
+        configure_b1_z1_play(default_cfg)
+
+        self.assertEqual("position", default_cfg.commands.hybrid_mode)
+
+        override_cfg = B1Z1Cfg()
+        configure_b1_z1_play(override_cfg, control_mode="force")
+        self.assertEqual("force", override_cfg.commands.hybrid_mode)
 
 
 if __name__ == "__main__":

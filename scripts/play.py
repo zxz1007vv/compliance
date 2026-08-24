@@ -85,7 +85,10 @@ def parse_args():
     parser.add_argument(
         "--control-mode",
         choices=VALID_CONTROL_MODES,
-        help="Evaluation control mode; defaults to the mode saved by training",
+        help=(
+            "Temporarily override the task's play control mode; when omitted, "
+            "the task-specific play configuration supplies the default"
+        ),
     )
     parser.add_argument(
         "--seed", type=int, default=1, help="Evaluation RNG seed (default: 1)"

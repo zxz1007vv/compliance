@@ -1,10 +1,14 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import isaacgym
 
+from scripts import utils as script_utils
 from wbc_compliance_gym.envs.base.legged_robot_config import Cfg
 from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg
 from wbc_compliance_gym.utils.config_utils import (
+    ConfigNode,
     apply_config,
     clone_config,
     config_fingerprint,
@@ -14,6 +18,51 @@ from wbc_compliance_gym.utils.config_utils import (
 
 
 class ConfigUtilsTests(unittest.TestCase):
+    def test_load_env_omits_absent_control_mode_and_forwards_explicit_override(self):
+        received_overrides = []
+
+        def env_cfg_factory():
+            return ConfigNode(
+                commands=ConfigNode(hybrid_mode="binary"),
+                domain_rand=ConfigNode(max_push_force_xyz_gripper=[-70.0, 70.0]),
+            )
+
+        def play_cfg_hook(cfg, **kwargs):
+            received_overrides.append(dict(kwargs))
+            cfg.commands.hybrid_mode = "position"
+            if "control_mode" in kwargs:
+                cfg.commands.hybrid_mode = kwargs["control_mode"]
+
+        class DummyEnv:
+            num_actions = 1
+
+            def __init__(self, *, sim_device, headless, cfg):
+                self.sim_device = sim_device
+                self.headless = headless
+                self.cfg = cfg
+
+        task_spec = SimpleNamespace(
+            env_cfg_factory=env_cfg_factory,
+            env_class=DummyEnv,
+            play_cfg_hook=play_cfg_hook,
+            wrappers=(),
+        )
+
+        with patch.object(script_utils, "register_tasks"), patch.object(
+            script_utils.task_registry, "get_spec", return_value=task_spec
+        ):
+            default_env, _ = script_utils.load_env(
+                sim_device="cpu", task_name="dummy", control_mode=None
+            )
+            override_env, _ = script_utils.load_env(
+                sim_device="cpu", task_name="dummy", control_mode="force"
+            )
+
+        self.assertNotIn("control_mode", received_overrides[0])
+        self.assertEqual("force", received_overrides[1]["control_mode"])
+        self.assertEqual("position", default_env.cfg.commands.hybrid_mode)
+        self.assertEqual("force", override_env.cfg.commands.hybrid_mode)
+
     def test_clone_does_not_share_nested_sections(self):
         original_num_envs = Cfg.env.num_envs
         cloned = clone_config(Cfg)

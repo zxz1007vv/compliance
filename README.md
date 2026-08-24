@@ -296,6 +296,10 @@ python scripts/play.py \
 
 ### 7.4 单独评估 position/force mode
 
+不传 `--control-mode` 时，使用对应 task 的 `configure_*_play()` 中定义的
+默认模式；`--control-mode` 只对当次运行做临时覆盖。当前
+`zgwsarm_compliance` 和 `b1_z1_ik` 的 play 默认模式都是 `position`。
+
 Position：
 
 ```bash

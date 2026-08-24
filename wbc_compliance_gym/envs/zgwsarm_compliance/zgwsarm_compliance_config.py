@@ -501,7 +501,7 @@ def configure_zgwsarm_compliance_play(
     cfg,
     *,
     num_envs=1,
-    control_mode= "position",
+    control_mode=None,
     seed=1,
     force_amplitude=None,
     fix_base=False,
@@ -513,7 +513,7 @@ def configure_zgwsarm_compliance_play(
     diagnostic_lin_vel_x=None,
     diagnostic_ang_vel_yaw=None,
 ):
-    """Build a play configuration for ZGWSARM compliance."""
+    """Apply ZGWSARM play defaults, then explicit caller overrides."""
     cfg.env.num_recording_envs = 1
     cfg.env.num_envs = num_envs
     cfg.env.episode_length_s = 10000
@@ -524,20 +524,10 @@ def configure_zgwsarm_compliance_play(
     cfg.terrain.center_robots = True
     cfg.terrain.center_span = 1
     cfg.terrain.teleport_robots = False
-    cfg.terrain.mesh_type = "plane"    #plane 需要 teleport_robots = False
+    cfg.terrain.mesh_type = "plane"  # plane requires teleport_robots = False
 
-    if control_mode is not None:
-        cfg.commands.hybrid_mode = control_mode
-    if seed is not None:
-        cfg.commands.curriculum_seed = seed
-    if force_amplitude is not None:
-        force_range = [
-            -float(force_amplitude),
-            float(force_amplitude),
-        ]
-        cfg.domain_rand.max_push_force_xyz_gripper = list(force_range)
-        cfg.domain_rand.max_push_force_xyz_gripper_freed = list(force_range)
-
+    # Task-owned play defaults. Edit this block to change normal play behavior.
+    cfg.commands.hybrid_mode = "position"
     cfg.commands.lin_vel_x = [0.0, 0.0]
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
@@ -552,6 +542,7 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.ee_sphe_yaw = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
 
+
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False
     cfg.asset.fix_base_link = fix_base
@@ -564,6 +555,22 @@ def configure_zgwsarm_compliance_play(
     cfg.env.recording_width_px = 1280
     cfg.env.record_video = True
     cfg.env.send_eval_data = True
+
+    # Optional caller overrides. ``scripts/play.py`` supplies ``control_mode``
+    # only when --control-mode is explicitly provided.
+    if control_mode is not None:
+        cfg.commands.hybrid_mode = control_mode
+    if seed is not None:
+        cfg.commands.curriculum_seed = seed
+    if force_amplitude is not None:
+        force_range = [
+            -float(force_amplitude),
+            float(force_amplitude),
+        ]
+        cfg.domain_rand.max_push_force_xyz_gripper = list(force_range)
+        cfg.domain_rand.max_push_force_xyz_gripper_freed = list(force_range)
+
+  
     if diagnostic_scenario is not None:
         configure_zgwsarm_diagnostic_play(
             cfg,

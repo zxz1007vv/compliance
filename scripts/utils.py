@@ -300,7 +300,6 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     if task_spec.play_cfg_hook is not None:
         play_kwargs = dict(
             num_envs=num_envs,
-            control_mode=control_mode,
             seed=seed,
             force_amplitude=force_amplitude,
             fix_base=fix_base,
@@ -309,6 +308,11 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
             sample_feasible_commands=sample_feasible_commands,
             control_only_z1=control_only_z1,
         )
+        # A task's play hook owns its default control mode.  Only forward this
+        # keyword when the caller explicitly requests a temporary override;
+        # passing None would suppress the hook's Python default argument.
+        if control_mode is not None:
+            play_kwargs["control_mode"] = control_mode
         if diagnostic_scenario is not None:
             play_kwargs.update(
                 diagnostic_scenario=diagnostic_scenario,

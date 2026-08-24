@@ -300,6 +300,14 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
         self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_x)
 
+    def test_play_uses_task_owned_default_position_mode(self):
+        cfg = ZGWSARMComplianceCfg()
+        self.assertEqual("binary", cfg.commands.hybrid_mode)
+
+        configure_zgwsarm_compliance_play(cfg)
+
+        self.assertEqual("position", cfg.commands.hybrid_mode)
+
     def test_play_without_force_override_keeps_training_force_range(self):
         cfg = ZGWSARMComplianceCfg()
         configure_zgwsarm_compliance_play(cfg, control_mode="force")

@@ -1,0 +1,31 @@
+# User-editable launcher configuration. Relative paths start from this file.
+schema_version: 1
+task_name: b1_z1_ik
+
+paths:
+  repository_root: ../..
+  deployment_bundle: ../policies/b1_z1
+  scene_path: ../models/b1_z1/scene_flat.xml
+  policy_backend: torchscript
+  policy_path: ../policies/b1_z1/policy.pt
+
+runtime:
+  viewer: true
+  realtime: true
+  # 0 runs until the Viewer is closed or Ctrl+C is pressed.
+  steps: 0
+  # 0 disables terminal status output.
+  status_interval_seconds: 1.0
+
+teleoperation:
+  deadzone: 0.10
+  force_limit: 70.0
+  position_rates: [0.20, 0.75, 0.75]
+  wrist_rate: 0.75
+  gripper_rate: 0.75
+
+# With no explicit dog arrays, B1+Z1 uses its deployment-contract leg defaults
+# and gains for both interpolation targets.
+startup:
+  fold_duration_seconds: 1.0
+  stand_duration_seconds: 1.0

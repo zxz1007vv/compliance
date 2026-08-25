@@ -34,8 +34,8 @@ teleoperation:
 # A executes current pose -> fold pose -> stand pose with dog-only PD.
 # The arm holds its deployment default with PD until B gives control to policy.
 startup:
-  fold_duration_seconds: 1.0
-  stand_duration_seconds: 1.0
+  fold_duration_seconds: 0.5
+  stand_duration_seconds: 0.5
 
   # FAR, FBL, RAR, RBL; each group is ABAD, HIP, KNEE, FOOT(wheel).
   dog_joint_names:
@@ -54,12 +54,12 @@ startup:
      0.0, -0.6, 1.2, 0.0,
      0.0, -0.6, 1.2, 0.0]
   kp:
-    [90.0, 120.0, 120.0, 60.0,
-     90.0, 120.0, 120.0, 60.0,
-     90.0, 120.0, 120.0, 60.0,
-     90.0, 120.0, 120.0, 60.0]
+    [200.0, 200.0, 200.0, 200.0,
+     200.0, 200.0, 200.0, 200.0,
+     200.0, 200.0, 200.0, 200.0,
+     200.0, 200.0, 200.0, 200.0]
   kd:
-    [1.0, 1.0, 1.0, 0.2,
-     1.0, 1.0, 1.0, 0.2,
-     1.0, 1.0, 1.0, 0.2,
-     1.0, 1.0, 1.0, 0.2]
+    [5.0, 5.0, 5.0, 5.0,
+     5.0, 5.0, 5.0, 5.0,
+     5.0, 5.0, 5.0, 5.0,
+     5.0, 5.0, 5.0, 5.0]

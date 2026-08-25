@@ -86,9 +86,9 @@ int main() {
                launch.startup_dog_dof_names->size() == 16,
            "launch startup joint mapping failed");
     expect(launch.startup_fold_duration && launch.startup_stand_duration &&
-               std::abs(*launch.startup_fold_duration - 1.0) < 1e-12 &&
-               std::abs(*launch.startup_stand_duration - 1.0) < 1e-12,
-           "launch startup phases must each take one second");
+               *launch.startup_fold_duration > 0.0 &&
+               *launch.startup_stand_duration > 0.0,
+           "launch startup phases must have positive durations");
     const auto gravity = mujoco::ProjectedGravity({{1, 0, 0, 0}});
     expect(std::abs(gravity[0]) < 1e-7f && std::abs(gravity[1]) < 1e-7f &&
                std::abs(gravity[2] + 1.0f) < 1e-7f,

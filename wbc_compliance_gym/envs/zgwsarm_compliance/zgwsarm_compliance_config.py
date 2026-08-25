@@ -582,12 +582,12 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
     cfg.commands.ee_sphe_yaw = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
-    cfg.commands.ee_force_x = [-20.0, 20.0]
-    cfg.commands.limit_ee_force_x = [-20.0, 20.0]
-    cfg.commands.ee_force_y = [-20.0, 20.0]
-    cfg.commands.limit_ee_force_y = [-20.0, 20.0]
-    cfg.commands.ee_force_z = [-20.0, 20.0]
-    cfg.commands.limit_ee_force_z = [-20.0, 20.0]
+    cfg.commands.ee_force_x = [0.0, 0.0]
+    cfg.commands.limit_ee_force_x = [0.0, 0.0]
+    cfg.commands.ee_force_y = [0.0, 0.0]
+    cfg.commands.limit_ee_force_y = [0.0, 0.0]
+    cfg.commands.ee_force_z = [10.0, 10.0]
+    cfg.commands.limit_ee_force_z = [10.0, 10.0]
 
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False

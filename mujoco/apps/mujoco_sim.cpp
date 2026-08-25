@@ -338,6 +338,17 @@ int run(int argc, char** argv) {
             }};
             const auto force_error =
                 difference(spring_force_yaw, force_command);
+            const std::array<double, 3> force_absolute_error{{
+                std::abs(force_error[0]), std::abs(force_error[1]),
+                std::abs(force_error[2]),
+            }};
+            const double actual_yaw_rate = simulation.base_yaw_rate();
+            const double yaw_rate_error =
+                std::abs(actual_yaw_rate - static_cast<double>(command[2]));
+            const double actual_forward_velocity =
+                simulation.base_forward_velocity();
+            const double forward_velocity_error = std::abs(
+                actual_forward_velocity - static_cast<double>(command[0]));
             std::cout << std::fixed << std::setprecision(3)
                       << "==================== STATUS ====================\n"
                       << "step=" << control_steps << "  t=" << simulation.time()
@@ -345,8 +356,13 @@ int run(int argc, char** argv) {
                       << (commands.force_mode() ? "force" : "position")
                       << "  control=" << mujoco::RobotControlModeName(controller.mode())
                       << "  gamepad=" << commands.input_active() << '\n'
-                      << "base_cmd: vx=" << command[0]
-                      << " m/s  yaw_rate=" << command[2] << " rad/s\n"
+                      << "lin_vel_x [m/s]: cmd=" << command[0]
+                      << "  actual=" << actual_forward_velocity
+                      << "  abs_error=" << forward_velocity_error << '\n'
+                      << "yaw_rate [rad/s]: cmd=" << command[2]
+                      << "  actual=" << actual_yaw_rate
+                      << "  abs_error=" << yaw_rate_error << '\n';
+            std::cout
                       << "---------------- POSITION TRACKING ----------------\n";
             if (commands.force_mode())
               std::cout << "inactive in force mode; legacy position slots are diagnostics only\n";
@@ -368,9 +384,9 @@ int run(int argc, char** argv) {
             print_vector(force_command);
             std::cout << "  actual=";
             print_vector(spring_force_yaw);
-            std::cout << "  error(actual-cmd)=";
-            print_vector(force_error);
-            std::cout << "  |error|=" << vector_norm(force_error) << " N\n"
+            std::cout << "  abs_error_xyz=";
+            print_vector(force_absolute_error);
+            std::cout << " N\n"
                       << "------------------- JOINT STATE -------------------\n"
                       << "arm_q [rad]=(";
             for (std::size_t index = 0; index < profile.arm_dof_names.size(); ++index) {

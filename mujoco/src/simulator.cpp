@@ -23,6 +23,7 @@ struct MujocoSimulator::Impl {
   std::vector<int> dof_addresses;
   std::vector<int> actuator_ids;
   int base_free_joint = -1;
+  int base_body = -1;
   int end_effector_body = -1;
   std::array<double, 3> force_field_anchor_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> spring_force_world{{0.0, 0.0, 0.0}};
@@ -49,7 +50,7 @@ struct MujocoSimulator::Impl {
     data = mj_makeData(model);
     if (!data) throw std::runtime_error("MuJoCo data allocation failed");
     model->opt.timestep = profile.physics_dt;
-    const int base_body = mj_name2id(model, mjOBJ_BODY, profile.base_body.c_str());
+    base_body = mj_name2id(model, mjOBJ_BODY, profile.base_body.c_str());
     if (base_body < 0) throw std::runtime_error("Base body is missing from model: " + profile.base_body);
     // Some URDFs have a massless root followed by fixed base/trunk links.  They
     // become one floating articulation in Isaac Gym, while the generated MJCF
@@ -291,6 +292,21 @@ void MujocoSimulator::step(const std::vector<double>& torque) {
 }
 
 double MujocoSimulator::time() const { return impl_->data->time; }
+
+double MujocoSimulator::base_yaw_rate() const {
+  std::array<mjtNum, 6> velocity_local{};
+  mj_objectVelocity(impl_->model, impl_->data, mjOBJ_BODY, impl_->base_body,
+                    velocity_local.data(), 1);
+  // mj_objectVelocity returns angular XYZ followed by linear XYZ.
+  return velocity_local[2];
+}
+
+double MujocoSimulator::base_forward_velocity() const {
+  std::array<mjtNum, 6> velocity_local{};
+  mj_objectVelocity(impl_->model, impl_->data, mjOBJ_BODY, impl_->base_body,
+                    velocity_local.data(), 1);
+  return velocity_local[3];
+}
 
 double MujocoSimulator::end_effector_contact_force() const {
   double magnitude = 0.0;

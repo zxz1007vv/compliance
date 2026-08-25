@@ -42,6 +42,12 @@ class MujocoSimulator {
   std::array<double, 3> end_effector_spring_force_world() const;
   void step(const std::vector<double>& torque);
   double time() const;
+  // Base angular velocity about its local Z axis, matching the trained yaw-rate
+  // tracking quantity.
+  double base_yaw_rate() const;
+  // Base linear velocity along its local X axis, matching the trained forward
+  // velocity tracking quantity.
+  double base_forward_velocity() const;
   double end_effector_contact_force() const;
   // Net contact force acting on the end effector, expressed in world XYZ.
   std::array<double, 3> end_effector_contact_force_world() const;

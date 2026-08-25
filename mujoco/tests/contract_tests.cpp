@@ -75,6 +75,12 @@ int main() {
     expect(launch.viewer && launch.realtime, "launch booleans failed");
     expect(launch.force_field_enabled,
            "force field must default on");
+    expect(launch.force_anchor_mode == "robot_relative_static",
+           "ZGWSARM launch must use the training anchor frame");
+    expect(launch.force_anchor_velocity_range.size() == 2 &&
+               launch.force_anchor_motion_duration.size() == 2 &&
+               launch.force_anchor_offset_limit.size() == 3,
+           "moving force-anchor settings have the wrong shape");
     expect(launch.force_field_stiffness > 0.0 &&
                launch.force_field_damping >= 0.0 &&
                launch.force_field_limit > 0.0,

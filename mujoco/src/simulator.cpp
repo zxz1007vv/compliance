@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <random>
 #include <stdexcept>
 #include <string>
 
@@ -25,6 +26,9 @@ struct MujocoSimulator::Impl {
   int base_free_joint = -1;
   int base_body = -1;
   int end_effector_body = -1;
+  std::array<double, 3> force_field_latched_anchor_local{{0.0, 0.0, 0.0}};
+  std::array<double, 3> force_field_anchor_local{{0.0, 0.0, 0.0}};
+  std::array<double, 3> force_field_anchor_velocity_local{{0.0, 0.0, 0.0}};
   std::array<double, 3> force_field_anchor_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> spring_force_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> last_spring_force_world{{0.0, 0.0, 0.0}};
@@ -33,6 +37,10 @@ struct MujocoSimulator::Impl {
   double force_field_stiffness = 0.0;
   double force_field_damping = 0.0;
   double force_field_limit = 0.0;
+  std::string force_anchor_mode = "world_fixed";
+  ForceAnchorMotionConfig force_anchor_motion;
+  double force_anchor_motion_end_time = 0.0;
+  std::mt19937 force_anchor_random{0};
   bool force_field_active = false;
   bool spring_force_present = false;
 #ifdef MUJOCO_HAS_CLASSIC_VIEWER
@@ -42,6 +50,88 @@ struct MujocoSimulator::Impl {
   std::unique_ptr<Simulate> viewer;
   bool viewer_attached = false;
 #endif
+
+  double command_base_yaw() const {
+    const int base_qpos = model->jnt_qposadr[base_free_joint];
+    const double qw = data->qpos[base_qpos + 3];
+    const double qx = data->qpos[base_qpos + 4];
+    const double qy = data->qpos[base_qpos + 5];
+    const double qz = data->qpos[base_qpos + 6];
+    const double norm = std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+    if (norm <= 0.0)
+      throw std::runtime_error("Cannot compute force anchor from zero quaternion");
+    const double w = qw / norm;
+    const double x = qx / norm;
+    const double y = qy / norm;
+    const double z = qz / norm;
+    return std::atan2(2.0 * (w * z + x * y),
+                      1.0 - 2.0 * (y * y + z * z));
+  }
+
+  std::array<double, 3> command_base_origin_world() const {
+    const int base_qpos = model->jnt_qposadr[base_free_joint];
+    return {{data->qpos[base_qpos], data->qpos[base_qpos + 1],
+             profile.command_base_height}};
+  }
+
+  void update_force_anchor_world() {
+    if (force_anchor_mode != "robot_relative_static" &&
+        force_anchor_mode != "robot_relative_moving")
+      return;
+    const auto origin = command_base_origin_world();
+    const double yaw = command_base_yaw();
+    const double cos_yaw = std::cos(yaw);
+    const double sin_yaw = std::sin(yaw);
+    force_field_anchor_world = {{
+        origin[0] + cos_yaw * force_field_anchor_local[0] -
+                        sin_yaw * force_field_anchor_local[1],
+        origin[1] + sin_yaw * force_field_anchor_local[0] +
+                        cos_yaw * force_field_anchor_local[1],
+        origin[2] + force_field_anchor_local[2],
+    }};
+  }
+
+  void sample_force_anchor_motion() {
+    std::normal_distribution<double> normal(0.0, 1.0);
+    std::array<double, 3> direction{{normal(force_anchor_random),
+                                     normal(force_anchor_random),
+                                     normal(force_anchor_random)}};
+    const double norm = std::sqrt(direction[0] * direction[0] +
+                                  direction[1] * direction[1] +
+                                  direction[2] * direction[2]);
+    if (norm <= 0.0) direction = {{1.0, 0.0, 0.0}};
+    const double safe_norm = norm <= 0.0 ? 1.0 : norm;
+    std::uniform_real_distribution<double> speed(
+        force_anchor_motion.velocity_range[0],
+        force_anchor_motion.velocity_range[1]);
+    const double sampled_speed = speed(force_anchor_random);
+    for (int axis = 0; axis < 3; ++axis)
+      force_field_anchor_velocity_local[axis] =
+          direction[axis] / safe_norm * sampled_speed;
+    std::uniform_real_distribution<double> duration(
+        force_anchor_motion.duration_range[0],
+        force_anchor_motion.duration_range[1]);
+    force_anchor_motion_end_time = data->time + duration(force_anchor_random);
+  }
+
+  void advance_force_anchor_motion() {
+    if (force_anchor_mode != "robot_relative_moving") return;
+    if (data->time >= force_anchor_motion_end_time)
+      sample_force_anchor_motion();
+    for (int axis = 0; axis < 3; ++axis) {
+      double offset = force_field_anchor_local[axis] -
+                      force_field_latched_anchor_local[axis] +
+                      force_field_anchor_velocity_local[axis] *
+                          model->opt.timestep;
+      if (std::abs(offset) > force_anchor_motion.offset_limit[axis]) {
+        force_field_anchor_velocity_local[axis] *= -1.0;
+        offset = std::clamp(offset, -force_anchor_motion.offset_limit[axis],
+                            force_anchor_motion.offset_limit[axis]);
+      }
+      force_field_anchor_local[axis] =
+          force_field_latched_anchor_local[axis] + offset;
+    }
+  }
 
   explicit Impl(const TaskProfile& task, bool enable_viewer) : profile(task) {
     std::array<char, 2048> error{};
@@ -128,6 +218,9 @@ struct MujocoSimulator::Impl {
       data->qpos[base_qpos + 3 + component] = profile.initial_base_quaternion_wxyz[component];
     for (std::size_t index = 0; index < qpos_addresses.size(); ++index)
       data->qpos[qpos_addresses[index]] = profile.default_dof_positions[index];
+    force_field_latched_anchor_local = {{0.0, 0.0, 0.0}};
+    force_field_anchor_local = {{0.0, 0.0, 0.0}};
+    force_field_anchor_velocity_local = {{0.0, 0.0, 0.0}};
     force_field_anchor_world = {{0.0, 0.0, 0.0}};
     spring_force_world = {{0.0, 0.0, 0.0}};
     last_spring_force_world = {{0.0, 0.0, 0.0}};
@@ -136,6 +229,9 @@ struct MujocoSimulator::Impl {
     force_field_stiffness = 0.0;
     force_field_damping = 0.0;
     force_field_limit = 0.0;
+    force_anchor_mode = "world_fixed";
+    force_anchor_motion = {};
+    force_anchor_motion_end_time = 0.0;
     force_field_active = false;
     spring_force_present = false;
     mj_forward(model, data);
@@ -162,13 +258,50 @@ RobotState MujocoSimulator::state() const {
 }
 
 void MujocoSimulator::start_end_effector_force_field(
-    double stiffness, double damping, double force_limit) {
+    double stiffness, double damping, double force_limit,
+    const std::string& anchor_mode, ForceAnchorMotionConfig motion) {
   if (stiffness <= 0.0 || damping < 0.0 || force_limit <= 0.0)
     throw std::runtime_error("Invalid end-effector force-field parameters");
+  if (anchor_mode != "world_fixed" &&
+      anchor_mode != "robot_relative_static" &&
+      anchor_mode != "robot_relative_moving")
+    throw std::runtime_error("Invalid end-effector force anchor mode: " +
+                             anchor_mode);
+  if (motion.velocity_range[0] < 0.0 ||
+      motion.velocity_range[1] < motion.velocity_range[0] ||
+      motion.duration_range[0] <= 0.0 ||
+      motion.duration_range[1] < motion.duration_range[0] ||
+      std::any_of(motion.offset_limit.begin(), motion.offset_limit.end(),
+                  [](double value) { return value <= 0.0; }))
+    throw std::runtime_error("Invalid moving force-anchor parameters");
   stop_end_effector_force_field();
+  impl_->force_anchor_mode = anchor_mode;
+  impl_->force_anchor_motion = motion;
   for (int axis = 0; axis < 3; ++axis) {
     impl_->force_field_anchor_world[axis] =
         impl_->data->xpos[3 * impl_->end_effector_body + axis];
+  }
+  if (anchor_mode == "robot_relative_static" ||
+      anchor_mode == "robot_relative_moving") {
+    const auto origin = impl_->command_base_origin_world();
+    const double yaw = impl_->command_base_yaw();
+    const double cos_yaw = std::cos(yaw);
+    const double sin_yaw = std::sin(yaw);
+    const double dx = impl_->force_field_anchor_world[0] - origin[0];
+    const double dy = impl_->force_field_anchor_world[1] - origin[1];
+    impl_->force_field_anchor_local = {{
+        cos_yaw * dx + sin_yaw * dy,
+        -sin_yaw * dx + cos_yaw * dy,
+        impl_->force_field_anchor_world[2] - origin[2],
+    }};
+    impl_->force_field_latched_anchor_local =
+        impl_->force_field_anchor_local;
+    if (anchor_mode == "robot_relative_moving")
+      impl_->sample_force_anchor_motion();
+  } else {
+    impl_->force_field_latched_anchor_local = {{0.0, 0.0, 0.0}};
+    impl_->force_field_anchor_local = {{0.0, 0.0, 0.0}};
+    impl_->force_field_anchor_velocity_local = {{0.0, 0.0, 0.0}};
   }
   impl_->force_field_stiffness = stiffness;
   impl_->force_field_damping = damping;
@@ -185,6 +318,11 @@ void MujocoSimulator::stop_end_effector_force_field() {
   }
   impl_->spring_force_world = {{0.0, 0.0, 0.0}};
   impl_->last_spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->force_field_latched_anchor_local = {{0.0, 0.0, 0.0}};
+  impl_->force_field_anchor_local = {{0.0, 0.0, 0.0}};
+  impl_->force_field_anchor_velocity_local = {{0.0, 0.0, 0.0}};
+  impl_->force_field_anchor_world = {{0.0, 0.0, 0.0}};
+  impl_->force_anchor_motion_end_time = 0.0;
   impl_->force_field_active = false;
   impl_->spring_force_present = false;
 }
@@ -194,8 +332,29 @@ bool MujocoSimulator::end_effector_force_field_active() const {
 }
 
 std::array<double, 3>
+MujocoSimulator::end_effector_force_field_anchor_local() const {
+  return impl_->force_field_anchor_local;
+}
+
+std::array<double, 3>
+MujocoSimulator::end_effector_force_field_anchor_velocity_local() const {
+  return impl_->force_field_anchor_velocity_local;
+}
+
+std::array<double, 3>
 MujocoSimulator::end_effector_force_field_anchor_world() const {
   return impl_->force_field_anchor_world;
+}
+
+std::array<double, 3>
+MujocoSimulator::end_effector_force_field_displacement_world() const {
+  if (!impl_->force_field_active) return {{0.0, 0.0, 0.0}};
+  std::array<double, 3> result{};
+  for (int axis = 0; axis < 3; ++axis) {
+    result[axis] = impl_->force_field_anchor_world[axis] -
+                   impl_->data->xpos[3 * impl_->end_effector_body + axis];
+  }
+  return result;
 }
 
 std::array<double, 3> MujocoSimulator::end_effector_spring_force_world() const {
@@ -219,6 +378,8 @@ void MujocoSimulator::step(const std::vector<double>& torque) {
   impl_->spring_force_world = {{0.0, 0.0, 0.0}};
   impl_->spring_force_present = false;
   if (impl_->force_field_active) {
+    impl_->advance_force_anchor_motion();
+    impl_->update_force_anchor_world();
     std::array<mjtNum, 6> velocity_world{};
     mj_objectVelocity(impl_->model, impl_->data, mjOBJ_BODY,
                       impl_->end_effector_body, velocity_world.data(), 0);

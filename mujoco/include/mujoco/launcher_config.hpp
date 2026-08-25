@@ -29,6 +29,10 @@ struct SimulatorConfig {
   std::optional<double> teleop_wrist_rate;
   std::optional<double> teleop_gripper_rate;
   bool force_field_enabled = true;
+  std::string force_anchor_mode = "world_fixed";
+  std::vector<double> force_anchor_velocity_range{0.0, 0.02};
+  std::vector<double> force_anchor_motion_duration{1.0, 3.0};
+  std::vector<double> force_anchor_offset_limit{0.05, 0.05, 0.03};
   double force_field_stiffness = 200.0;
   double force_field_damping = 6.0;
   double force_field_limit = 70.0;

@@ -21,9 +21,13 @@ runtime:
 teleoperation:
   deadzone: 0.10
   force_limit: 30.0
-  # In force mode, latch the current EE world point and create the same
-  # virtual spring-damper force field used during training.
+  # In force mode, latch the current EE in the yaw-only robot command frame.
   force_field_enabled: true
+  force_anchor_mode: robot_relative_static
+  # Used when force_anchor_mode is robot_relative_moving.
+  force_anchor_velocity_range: [0.0, 0.02]       # speed magnitude, m/s
+  force_anchor_motion_duration_s: [1.0, 3.0]
+  force_anchor_offset_limit: [0.05, 0.05, 0.03]  # local XYZ, m
   force_field_stiffness: 200.0  # N/m
   force_field_damping: 6.0      # N*s/m
   force_field_limit: 30.0       # per-axis clamp, N

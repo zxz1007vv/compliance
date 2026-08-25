@@ -382,6 +382,16 @@ def _configure_zgwsarm_domain_randomization(cfg):
 
     cfg.domain_rand.randomize_gripper_force_gains = True
     cfg.domain_rand.gripper_forced_prob = 0.8
+    cfg.domain_rand.force_anchor_modes = [
+        "robot_relative_static",
+        "robot_relative_moving",
+    ]
+    cfg.domain_rand.force_anchor_mode_probs = [0.8, 0.2]
+    # Moving-anchor speed magnitude, segment duration and maximum XYZ offset
+    # from the initially latched local point.
+    cfg.domain_rand.force_anchor_velocity_range = [0.0, 0.02]
+    cfg.domain_rand.force_anchor_motion_duration_s = [1.0, 3.0]
+    cfg.domain_rand.force_anchor_offset_limit = [0.05, 0.05, 0.03]
     cfg.domain_rand.gripper_force_kp_range = [25.0, 400.0]
     cfg.domain_rand.gripper_force_kd_range = [3.0, 10.0]
     cfg.domain_rand.prop_kd = 0.1

@@ -56,6 +56,153 @@ URDF_PATH = MODEL_ROOT / "urdf" / "zgwsarm.urdf"
 
 
 class ZGWSARMContractTests(unittest.TestCase):
+    def test_force_anchor_latches_in_yaw_only_robot_frame(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.num_envs = 1
+        env.device = "cpu"
+        env.cfg = SimpleNamespace(
+            commands=SimpleNamespace(command_base_height=0.54),
+            domain_rand=SimpleNamespace(
+                force_anchor_mode="robot_relative_static"
+            ),
+        )
+        env.robot_actor_idxs = torch.tensor([0], dtype=torch.long)
+        env.gripper_stator_index = 0
+        env.root_states = torch.tensor(
+            [[0.0, 0.0, 0.54, 0.0, 0.0, 0.0, 1.0] + [0.0] * 6]
+        )
+        env.rigid_body_state = torch.zeros(1, 1, 13)
+        env.rigid_body_state[0, 0, 0:3] = torch.tensor([1.0, 0.0, 0.54])
+        env.force_anchor_local = torch.zeros(1, 3)
+        env.force_anchor_latched_local = torch.zeros(1, 3)
+        env.force_anchor_world = torch.zeros(1, 3)
+        env.force_anchor_velocity_local = torch.zeros(1, 3)
+        env.force_anchor_motion_end_step = torch.zeros(1)
+        env.force_anchor_mode = torch.tensor([0], dtype=torch.long)
+        env.force_anchor_active = torch.zeros(1, dtype=torch.bool)
+        env.force_anchor_latch_pending = torch.ones(1, dtype=torch.bool)
+
+        env._latch_force_anchor(torch.tensor([0], dtype=torch.long))
+        torch.testing.assert_close(
+            env.force_anchor_local, torch.tensor([[1.0, 0.0, 0.0]])
+        )
+
+        half_yaw = np.pi / 4.0
+        env.root_states[0, 0:2] = torch.tensor([2.0, 3.0])
+        env.root_states[0, 3:7] = torch.tensor(
+            [0.0, 0.0, np.sin(half_yaw), np.cos(half_yaw)]
+        )
+        env._update_force_anchor_world()
+        torch.testing.assert_close(
+            env.force_anchor_world,
+            torch.tensor([[2.0, 4.0, 0.54]]),
+            atol=1e-6,
+            rtol=0.0,
+        )
+
+    def test_force_anchor_lifecycle_restarts_without_stale_state(self):
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.device = "cpu"
+        env.cfg = SimpleNamespace(
+            domain_rand=SimpleNamespace(
+                force_anchor_mode="robot_relative_static"
+            )
+        )
+        env.force_or_position_control = torch.tensor([1.0, 0.0])
+        env.force_anchor_active = torch.ones(2, dtype=torch.bool)
+        env.force_anchor_latch_pending = torch.zeros(2, dtype=torch.bool)
+        env.force_anchor_local = torch.ones(2, 3)
+        env.force_anchor_latched_local = torch.ones(2, 3)
+        env.force_anchor_world = torch.ones(2, 3)
+        env.force_anchor_velocity_local = torch.ones(2, 3)
+        env.force_anchor_motion_end_step = torch.ones(2)
+        env.force_anchor_mode = torch.tensor([0, 2], dtype=torch.long)
+        env.force_anchor_displacement_world = torch.ones(2, 3)
+        env.force_anchor_spring_force_world = torch.ones(2, 3)
+        env.freed_envs = torch.ones(2, dtype=torch.bool)
+        ids = torch.tensor([0, 1], dtype=torch.long)
+
+        env._on_force_or_position_control_resampled(
+            ids, torch.tensor([0.0, 1.0])
+        )
+
+        torch.testing.assert_close(
+            env.force_anchor_latch_pending,
+            torch.tensor([True, False]),
+        )
+        self.assertFalse(torch.any(env.force_anchor_active))
+        self.assertFalse(torch.any(env.freed_envs))
+        torch.testing.assert_close(
+            env.force_anchor_local, torch.zeros(2, 3)
+        )
+
+    def test_force_anchor_distribution_and_motion_are_explicit(self):
+        cfg = ZGWSARMComplianceCfg()
+        self.assertEqual(
+            [
+                "robot_relative_static",
+                "robot_relative_moving",
+            ],
+            list(cfg.domain_rand.force_anchor_modes),
+        )
+        self.assertEqual(
+            [0.8, 0.2],
+            list(cfg.domain_rand.force_anchor_mode_probs),
+        )
+
+        env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
+        env.num_envs = 2
+        env.device = "cpu"
+        env.dt = 0.02
+        env.sim_params = SimpleNamespace(dt=0.005)
+        env.cfg = SimpleNamespace(
+            commands=SimpleNamespace(command_base_height=0.54),
+            domain_rand=SimpleNamespace(
+                force_anchor_modes=["robot_relative_moving"],
+                force_anchor_mode_probs=[1.0],
+                force_anchor_velocity_range=[0.0, 0.02],
+                force_anchor_motion_duration_s=[1.0, 3.0],
+                force_anchor_offset_limit=[0.05, 0.05, 0.03],
+            ),
+        )
+        env.robot_actor_idxs = torch.tensor([0, 1], dtype=torch.long)
+        env.gripper_stator_index = 0
+        env.root_states = torch.tensor(
+            [
+                [0.0, 0.0, 0.54, 0.0, 0.0, 0.0, 1.0] + [0.0] * 6,
+                [0.0, 0.0, 0.54, 0.0, 0.0, 0.0, 1.0] + [0.0] * 6,
+            ]
+        )
+        env.rigid_body_state = torch.zeros(2, 1, 13)
+        env.rigid_body_state[:, 0, 0:3] = torch.tensor(
+            [[1.0, 0.0, 0.54], [1.0, 0.0, 0.54]]
+        )
+        env.episode_length_buf = torch.zeros(2)
+        env.force_anchor_local = torch.zeros(2, 3)
+        env.force_anchor_latched_local = torch.zeros(2, 3)
+        env.force_anchor_world = torch.zeros(2, 3)
+        env.force_anchor_velocity_local = torch.zeros(2, 3)
+        env.force_anchor_motion_end_step = torch.zeros(2)
+        env.force_anchor_offset_limit = torch.tensor([0.05, 0.05, 0.03])
+        env.force_anchor_displacement_world = torch.zeros(2, 3)
+        env.force_anchor_spring_force_world = torch.zeros(2, 3)
+        env.force_anchor_active = torch.zeros(2, dtype=torch.bool)
+        env.force_anchor_latch_pending = torch.ones(2, dtype=torch.bool)
+        env.force_anchor_mode = torch.full((2,), -1, dtype=torch.long)
+
+        ids = torch.tensor([0, 1], dtype=torch.long)
+        env._sample_force_anchor_modes(ids)
+        torch.testing.assert_close(
+            env.force_anchor_mode, torch.tensor([1, 1], dtype=torch.long)
+        )
+        env._latch_force_anchor(ids)
+        local_before = env.force_anchor_local.clone()
+        env._update_force_anchor_world()
+        displacement = env.force_anchor_local - local_before
+        self.assertTrue(torch.all(torch.linalg.norm(displacement, dim=1) <= 0.000101))
+        self.assertTrue(torch.all(torch.linalg.norm(displacement, dim=1) > 0.0))
+
+
     def test_urdf_dependency_graph_and_root_are_repository_local(self):
         robot = ET.parse(URDF_PATH).getroot()
         joints = robot.findall("joint")

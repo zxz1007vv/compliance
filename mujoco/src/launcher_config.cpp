@@ -216,6 +216,17 @@ SimulatorConfig SimulatorConfig::Load(const std::filesystem::path& path) {
   result.teleop_gripper_rate = optional_number(document, teleoperation, "gripper_rate");
   result.force_field_enabled = boolean(
       document, teleoperation, "force_field_enabled", true);
+  result.force_anchor_mode = optional_string(
+      document, teleoperation, "force_anchor_mode", "world_fixed");
+  if (const auto value = optional_numbers(
+          document, teleoperation, "force_anchor_velocity_range"))
+    result.force_anchor_velocity_range = *value;
+  if (const auto value = optional_numbers(
+          document, teleoperation, "force_anchor_motion_duration_s"))
+    result.force_anchor_motion_duration = *value;
+  if (const auto value = optional_numbers(
+          document, teleoperation, "force_anchor_offset_limit"))
+    result.force_anchor_offset_limit = *value;
   result.force_field_stiffness = number(
       document, teleoperation, "force_field_stiffness", 200.0);
   result.force_field_damping = number(
@@ -257,6 +268,31 @@ SimulatorConfig SimulatorConfig::Load(const std::filesystem::path& path) {
     throw std::runtime_error(
         "force-field stiffness/limit must be positive and damping nonnegative");
   }
+  if (result.force_anchor_mode != "world_fixed" &&
+      result.force_anchor_mode != "robot_relative_static" &&
+      result.force_anchor_mode != "robot_relative_moving") {
+    throw std::runtime_error(
+        "teleoperation.force_anchor_mode must be 'world_fixed' or "
+        "'robot_relative_static' or 'robot_relative_moving'");
+  }
+  if (result.force_anchor_velocity_range.size() != 2 ||
+      result.force_anchor_velocity_range[0] < 0.0 ||
+      result.force_anchor_velocity_range[1] <
+          result.force_anchor_velocity_range[0])
+    throw std::runtime_error(
+        "force_anchor_velocity_range must be [min,max] with 0 <= min <= max");
+  if (result.force_anchor_motion_duration.size() != 2 ||
+      result.force_anchor_motion_duration[0] <= 0.0 ||
+      result.force_anchor_motion_duration[1] <
+          result.force_anchor_motion_duration[0])
+    throw std::runtime_error(
+        "force_anchor_motion_duration_s must contain positive [min,max]");
+  if (result.force_anchor_offset_limit.size() != 3 ||
+      std::any_of(result.force_anchor_offset_limit.begin(),
+                  result.force_anchor_offset_limit.end(),
+                  [](double value) { return value <= 0.0; }))
+    throw std::runtime_error(
+        "force_anchor_offset_limit must contain 3 positive values");
   if ((result.startup_fold_duration && *result.startup_fold_duration <= 0.0) ||
       (result.startup_stand_duration && *result.startup_stand_duration <= 0.0)) {
     throw std::runtime_error("startup interpolation durations must be positive");

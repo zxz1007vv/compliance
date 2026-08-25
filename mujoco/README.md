@@ -123,7 +123,11 @@ mujoco/build/mujoco_sim --task zgwsarm_compliance \
 | `runtime.viewer/realtime/steps` | 界面、实时节拍和有限步运行 |
 | `runtime.status_interval_seconds` | 终端状态输出周期，`0` 表示关闭 |
 | `teleoperation.*` | 手柄 deadzone、力/位置/腕/夹爪速度 |
-| `teleoperation.force_field_enabled` | force mode 下启用固定世界锚点的虚拟弹簧力场 |
+| `teleoperation.force_field_enabled` | force mode 下启用虚拟弹簧力场；关闭即为显式 free 状态 |
+| `teleoperation.force_anchor_mode` | `robot_relative_static`、`robot_relative_moving` 或 `world_fixed` |
+| `teleoperation.force_anchor_velocity_range` | moving 模式的局部锚点速度模长范围，单位 m/s |
+| `teleoperation.force_anchor_motion_duration_s` | moving 模式每段恒速运动的持续时间范围 |
+| `teleoperation.force_anchor_offset_limit` | moving 模式相对初始锁存点的局部 XYZ 最大偏移 |
 | `teleoperation.force_field_stiffness/damping/limit` | 力场的 K、D 和逐轴力限幅 |
 | `startup.*` | A 键匍匐/起立姿态、PD 增益和两段插值时间 |
 
@@ -182,12 +186,20 @@ RT、LT、Start、Back 不参与控制，也不需要按住任何使能键。
 
 这里的 D-pad 是手柄左侧十字方向键，不是左摇杆。摇杆有 0.10 deadzone；位置目标采用
 积分并受训练命令范围限制，力目标是直接映射并受各任务力范围限制。默认启用
-`teleoperation.force_field_enabled`：进入 force mode 且 RL 接管时，程序把当时的末端世界
-坐标锁存为固定锚点 `p_anchor`。每个物理子步向末端施加
+`teleoperation.force_field_enabled`：进入 force mode 且 RL 接管时，程序锁存当时的末端位置。
+ZGWSARM 默认使用 `force_anchor_mode: robot_relative_static`，把锚点保存在与训练端一致的
+“固定世界高度、随底盘 X/Y/yaw”的命令基坐标系中；底盘 roll/pitch 或地形倾斜不会旋转锚点。
+也可在 YAML 中选择 `robot_relative_moving`，让局部锚点以受限、连续的分段低速轨迹移动；
+`world_fixed` 则保持锁存时的世界坐标，但只保留为墙面/固定物体的显式诊断选项，不进入
+当前训练随机化。训练端按 0.8/0.2 为每个 force segment 随机采样 static/moving，MuJoCo
+单机器人部署端通过 YAML 固定一种模式，便于分别评估。
+robot-relative 模式在每个物理子步先用当前底盘 X/Y/yaw 更新世界锚点，然后施加
 `F_spring = clamp(K (p_anchor - p_ee) - D v_ee)`，与训练环境的虚拟弹簧—阻尼力场一致。
 力命令 XYZ 只作为策略要跟踪的目标，不会被直接写成外力；策略需要移动末端、压缩虚拟弹簧，
 使实际 `F_spring` 接近期望力。切回 position mode、退出 RL 或 reset 时力场关闭，下次进入
 force mode 会在新的当前位置重新锁存锚点。
+`force_field_enabled: false`（或 `--no-force-field`）是显式 free 测试；单纯把 `Fx/Fy/Fz`
+设为零并不会关闭弹簧，因此“零力命令较稳”不能直接等价为策略本身不抖。
 力模式观测会把位置命令 15:18 清零，与训练端 `RCSensor` 一致。状态行里的 `gamepad=1`
 表示 SDL 已识别手柄；若一直为 `0`，可运行 `mujoco/build/mujoco_gamepad_probe` 查看原始轴
 和按键。可用 `--no-force-field` 临时关闭虚拟力场，只保留策略观测和鼠标扰动。
@@ -202,7 +214,8 @@ MuJoCo 官方 Viewer 保留右键给相机，因此拖动刚体使用标准 pert
 4. 松开鼠标后扰动力立即消失，观察机械臂和四足是否柔顺恢复且没有失稳。
 
 `Shift+Ctrl+右键` 改变拖动平面。鼠标 perturbation 与虚拟弹簧力可以叠加，
-但做零命令柔顺性测试时应先确认日志中的 `force_yaw` 命令项为零。
+但做零命令柔顺性测试时应先确认日志中的 `force_yaw` 命令项为零。状态输出同时给出
+`anchor` 的 mode、active、local/world 坐标及世界系位移，便于核对锚点生命周期。
 
 状态输出按位置跟踪、力/柔顺性和关节状态分块。位置部分同时打印球坐标、机械臂 XYZ
 的命令值、实际值和误差；force mode 下位置目标对策略无效，日志会明确标记 inactive。

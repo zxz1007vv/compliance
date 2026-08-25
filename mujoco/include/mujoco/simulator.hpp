@@ -24,6 +24,12 @@ struct MousePerturbationDebugState {
   std::array<double, 3> force_world{{0, 0, 0}};
 };
 
+struct ForceAnchorMotionConfig {
+  std::array<double, 2> velocity_range{{0.0, 0.02}};
+  std::array<double, 2> duration_range{{1.0, 3.0}};
+  std::array<double, 3> offset_limit{{0.05, 0.05, 0.03}};
+};
+
 class MujocoSimulator {
  public:
   explicit MujocoSimulator(const TaskProfile& profile, bool enable_viewer = false);
@@ -32,13 +38,21 @@ class MujocoSimulator {
   MujocoSimulator& operator=(const MujocoSimulator&) = delete;
   void reset();
   RobotState state() const;
-  // Latch the current end-effector world point and enable a Cartesian
-  // spring-damper field around it. Force is clamped independently per axis.
+  // Latch the current end-effector point and enable a Cartesian spring-damper
+  // field. Both robot-relative modes use the training yaw-only command frame;
+  // moving additionally advances a bounded local point, while world_fixed
+  // preserves the legacy behavior.
   void start_end_effector_force_field(double stiffness, double damping,
-                                      double force_limit);
+                                      double force_limit,
+                                      const std::string& anchor_mode =
+                                          "world_fixed",
+                                      ForceAnchorMotionConfig motion = {});
   void stop_end_effector_force_field();
   bool end_effector_force_field_active() const;
+  std::array<double, 3> end_effector_force_field_anchor_local() const;
+  std::array<double, 3> end_effector_force_field_anchor_velocity_local() const;
   std::array<double, 3> end_effector_force_field_anchor_world() const;
+  std::array<double, 3> end_effector_force_field_displacement_world() const;
   std::array<double, 3> end_effector_spring_force_world() const;
   void step(const std::vector<double>& torque);
   double time() const;

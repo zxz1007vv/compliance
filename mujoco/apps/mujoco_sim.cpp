@@ -37,6 +37,8 @@ struct Options {
   bool realtime = true;
   bool viewer = false;
   bool force_field_enabled = true;
+  std::string force_anchor_mode = "world_fixed";
+  mujoco::ForceAnchorMotionConfig force_anchor_motion;
   double force_field_stiffness = 200.0;
   double force_field_damping = 6.0;
   double force_field_limit = 70.0;
@@ -144,6 +146,13 @@ Options parse(int argc, char** argv) {
   options.realtime = config.realtime;
   options.viewer = config.viewer;
   options.force_field_enabled = config.force_field_enabled;
+  options.force_anchor_mode = config.force_anchor_mode;
+  std::copy_n(config.force_anchor_velocity_range.begin(), 2,
+              options.force_anchor_motion.velocity_range.begin());
+  std::copy_n(config.force_anchor_motion_duration.begin(), 2,
+              options.force_anchor_motion.duration_range.begin());
+  std::copy_n(config.force_anchor_offset_limit.begin(), 3,
+              options.force_anchor_motion.offset_limit.begin());
   options.force_field_stiffness = config.force_field_stiffness;
   options.force_field_damping = config.force_field_damping;
   options.force_field_limit = config.force_field_limit;
@@ -214,7 +223,8 @@ int run(int argc, char** argv) {
                  "hold Ctrl+right-drag\n"
               << "force field="
               << (options.force_field_enabled ? "enabled" : "disabled")
-              << " (K=" << options.force_field_stiffness
+              << " (anchor_mode=" << options.force_anchor_mode
+              << ", K=" << options.force_field_stiffness
               << " N/m, D=" << options.force_field_damping
               << " N*s/m, axis_limit=" << options.force_field_limit << " N)\n"
               << "arm_q_order=";
@@ -277,7 +287,8 @@ int run(int argc, char** argv) {
               !simulation.end_effector_force_field_active()) {
             simulation.start_end_effector_force_field(
                 options.force_field_stiffness, options.force_field_damping,
-                options.force_field_limit);
+                options.force_field_limit, options.force_anchor_mode,
+                options.force_anchor_motion);
           } else if (!force_field_should_be_active &&
                      simulation.end_effector_force_field_active()) {
             simulation.stop_end_effector_force_field();
@@ -320,6 +331,14 @@ int run(int argc, char** argv) {
                 command[12], command[13], command[14]}};
             const auto spring_force_world =
                 simulation.end_effector_spring_force_world();
+            const auto force_anchor_local =
+                simulation.end_effector_force_field_anchor_local();
+            const auto force_anchor_velocity_local =
+                simulation.end_effector_force_field_anchor_velocity_local();
+            const auto force_anchor_world =
+                simulation.end_effector_force_field_anchor_world();
+            const auto force_anchor_displacement_world =
+                simulation.end_effector_force_field_displacement_world();
             const double qw = robot_state.base_quaternion[0];
             const double qx = robot_state.base_quaternion[1];
             const double qy = robot_state.base_quaternion[2];
@@ -387,6 +406,19 @@ int run(int argc, char** argv) {
             std::cout << "  abs_error_xyz=";
             print_vector(force_absolute_error);
             std::cout << " N\n"
+                      << "anchor: mode=" << options.force_anchor_mode
+                      << "  active="
+                      << simulation.end_effector_force_field_active()
+                      << "  local=";
+            print_vector(force_anchor_local);
+            std::cout << "  velocity_local=";
+            print_vector(force_anchor_velocity_local);
+            std::cout << "  world=";
+            print_vector(force_anchor_world);
+            std::cout << "  displacement_world=";
+            print_vector(force_anchor_displacement_world);
+            std::cout << "  |displacement|="
+                      << vector_norm(force_anchor_displacement_world) << " m\n"
                       << "------------------- JOINT STATE -------------------\n"
                       << "arm_q [rad]=(";
             for (std::size_t index = 0; index < profile.arm_dof_names.size(); ++index) {

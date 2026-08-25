@@ -59,9 +59,23 @@ run 导出精确的 TorchScript、观测/关节/控制合同，支持 F710 位�
 构建、手柄映射和运行命令见
 [mujoco/README.md](mujoco/README.md)。
 
-MuJoCo 的 force mode 会在切换时锁存当前末端世界坐标，并用可配置的虚拟弹簧—阻尼
-力场复现训练环境；力命令是策略跟踪目标，不会被直接施加为外力。Viewer 也支持用
+ZGWSARM 的 force mode 现在把末端锚点独立于 position trajectory 锁存，并默认保存在
+随底盘 X/Y/yaw、固定世界高度的命令基坐标系中；Isaac Gym 与 MuJoCo 使用相同的
+`robot_relative_static` 生命周期。力命令是策略跟踪目标，不会被直接施加为外力；显式
+free 状态才会关闭虚拟弹簧，零力命令本身不会。Viewer 也支持用
 `Ctrl+右键` 拖动选中的机械臂刚体进行零力命令柔顺性测试。
+
+训练端现在按每个新的 force segment 独立采样锚点模式：
+`robot_relative_static/robot_relative_moving = 0.8/0.2`。`world_fixed` 不进入训练随机化，
+避免世界固定接触点与持续的底盘速度/yaw-rate 跟踪形成额外对抗任务。
+moving 模式以配置的低速分段运动连续更新局部锚点，并限制相对初始锁存点的最大偏移；
+模式不会在每个物理步重新采样。free/position/reset 会清空锚点状态，下次进入有效 force
+segment 时重新采样和锁存。
+
+这次锚点改动保持 23 维命令、观测、奖励、动作、PD 增益和位置轨迹逻辑不变。旧的
+`2026-08-24_18-44-10_wbc_release` 策略仍可用于修改前后的 A/B 基线评估，但它没有针对
+新锚点随机化重新训练，因此不应单独作为最终训练效果结论。当前弹簧阻尼仍为
+`Kd * (0 - ee_velocity)`；moving anchor velocity 尚未进入阻尼项，以保持本轮实验变量单一。
 
 导出策略到 `mujoco/policies/` 后，使用
 `mujoco/build/mujoco_sim --task zgwsarm_compliance` 或

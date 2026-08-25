@@ -129,7 +129,32 @@ class Logger:
         extras["train/episode"]["Ang vel tracking error force-envs"] = torch.mean(self.env.ang_vel_tracking_error_buf[force_control_envs])
         
         extras["train/episode"]["Proportion of Force Envs"] = torch.sum(force_control_envs) / self.env.num_envs
-        extras["train/episode"]["Proportion of Freed Force Envs"] = torch.sum(self.env.freed_envs[force_control_envs]) / torch.sum(force_control_envs)
+        force_env_count = torch.sum(force_control_envs)
+        extras["train/episode"]["Proportion of Freed Force Envs"] = torch.sum(self.env.freed_envs[force_control_envs]) / torch.clamp(force_env_count, min=1)
+        if hasattr(self.env, "force_anchor_active"):
+            extras["train/episode"]["Proportion of Active Force Anchors"] = torch.sum(
+                self.env.force_anchor_active
+            ) / self.env.num_envs
+            active_anchors = self.env.force_anchor_active
+            active_anchor_count = torch.sum(active_anchors)
+            for mode_id, mode_name in enumerate(
+                (
+                    "Robot Relative Static",
+                    "Robot Relative Moving",
+                )
+            ):
+                extras["train/episode"][
+                    f"Proportion of Force Anchors {mode_name}"
+                ] = torch.sum(
+                    active_anchors & (self.env.force_anchor_mode == mode_id)
+                ) / torch.clamp(active_anchor_count, min=1)
+            if torch.any(active_anchors):
+                extras["train/episode"]["Force anchor displacement norm"] = torch.linalg.norm(
+                    self.env.force_anchor_displacement_world[active_anchors], dim=1
+                ).mean()
+                extras["train/episode"]["Force anchor spring force norm"] = torch.linalg.norm(
+                    self.env.force_anchor_spring_force_world[active_anchors], dim=1
+                ).mean()
         
         extras["train/episode"]['Number of env. reset'] = len(env_ids)
         extras["train/episode"]['Average episode length'] = torch.mean(self.env.episode_length_buf[env_ids]*self.env.dt)

@@ -29,6 +29,15 @@ from .legged_robot_config import Cfg
 TRANSFORM_BASE_ARM_X = 0.2
 TRANSFORM_BASE_ARM_Z = 0.1585
 DEFAULT_BASE_HEIGHT = 0.6
+FORCE_ANCHOR_MODE_INACTIVE = -1
+FORCE_ANCHOR_MODE_ROBOT_RELATIVE_STATIC = 0
+FORCE_ANCHOR_MODE_ROBOT_RELATIVE_MOVING = 1
+FORCE_ANCHOR_MODE_WORLD_FIXED = 2
+FORCE_ANCHOR_MODE_IDS = {
+    "robot_relative_static": FORCE_ANCHOR_MODE_ROBOT_RELATIVE_STATIC,
+    "robot_relative_moving": FORCE_ANCHOR_MODE_ROBOT_RELATIVE_MOVING,
+    "world_fixed": FORCE_ANCHOR_MODE_WORLD_FIXED,
+}
 class LeggedRobot(CommandLifecycleMixin, BaseTask):
     def __init__(self, cfg: Cfg, sim_params, physics_engine, sim_device, headless,
                  initial_dynamics_dict=None, terrain_props=None, custom_heightmap=None):
@@ -516,16 +525,22 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             # self.commands[env_ids, INDEX_EE_FORCE_DIRECTION] = 0.0
             # self.commands[env_ids, INDEX_EE_FORCE_Z] = 0.0
         
-        force_control_envs = env_ids[self.force_or_position_control[env_ids] == 1]
-        self.forces[force_control_envs, self.gripper_stator_index, :3] = 0.
-        self.selected_env_ids[force_control_envs] = 0
-        self.push_end_time[force_control_envs] = 0.
-        self.force_target[force_control_envs, :3] = 0.
-        self.push_duration[force_control_envs] = 0.
-        self.current_Fxyz_cmd[force_control_envs, :3] = 0.
-        self.commands[force_control_envs, INDEX_EE_FORCE_X] = 0.0
-        self.commands[force_control_envs, INDEX_EE_FORCE_Y] = 0.0
-        self.commands[force_control_envs, INDEX_EE_FORCE_Z] = 0.0
+        # Clear the complete force lifecycle for every reset environment.  The
+        # new mode is sampled later in compute_intermediate_ee_pos_command(),
+        # so filtering here by the old mode can leak a previous episode's
+        # scheduler/anchor state into the next one.
+        self.forces[env_ids, self.gripper_stator_index, :3] = 0.
+        self.selected_env_ids[env_ids] = 0
+        self.push_end_time[env_ids] = 0.
+        self.force_target[env_ids, :3] = 0.
+        self.push_duration[env_ids] = 0.
+        self.current_Fxyz_cmd[env_ids, :3] = 0.
+        self.commands[env_ids, INDEX_EE_FORCE_X] = 0.0
+        self.commands[env_ids, INDEX_EE_FORCE_Y] = 0.0
+        self.commands[env_ids, INDEX_EE_FORCE_Z] = 0.0
+        self.freed_envs[env_ids] = False
+        if hasattr(self, "force_anchor_active"):
+            self._clear_force_anchor_state(env_ids)
 
         # Reset push gripper 
         if self.cfg.domain_rand.push_gripper_stators:
@@ -1499,6 +1514,247 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         self.Fz = Fz
         self.forces_deactivated = True
 
+    def _uses_independent_force_anchor(self):
+        modes = getattr(self.cfg.domain_rand, "force_anchor_modes", None)
+        if modes is not None:
+            return True
+        mode = getattr(self.cfg.domain_rand, "force_anchor_mode", None)
+        if mode is None or mode == "legacy_position_trajectory":
+            return False
+        if mode not in FORCE_ANCHOR_MODE_IDS:
+            raise ValueError(f"Unsupported force_anchor_mode: {mode}")
+        return True
+
+    def _force_anchor_distribution(self):
+        modes = getattr(self.cfg.domain_rand, "force_anchor_modes", None)
+        if modes is None:
+            mode = getattr(
+                self.cfg.domain_rand,
+                "force_anchor_mode",
+                "legacy_position_trajectory",
+            )
+            if mode not in FORCE_ANCHOR_MODE_IDS:
+                raise ValueError(f"Unsupported force_anchor_mode: {mode}")
+            return [mode], [1.0]
+        modes = list(modes)
+        probabilities = list(
+            getattr(self.cfg.domain_rand, "force_anchor_mode_probs", [])
+        )
+        if not modes or len(modes) != len(probabilities):
+            raise ValueError(
+                "force_anchor_modes and force_anchor_mode_probs must have "
+                "the same non-zero length"
+            )
+        unknown_modes = [
+            mode for mode in modes if mode not in FORCE_ANCHOR_MODE_IDS
+        ]
+        if unknown_modes:
+            raise ValueError(
+                f"Unsupported force anchor modes: {unknown_modes}"
+            )
+        if any(probability < 0.0 for probability in probabilities) or not np.isclose(
+            sum(probabilities), 1.0
+        ):
+            raise ValueError(
+                "force_anchor_mode_probs must be nonnegative and sum to 1"
+            )
+        return modes, probabilities
+
+    def _clear_force_anchor_state(self, env_ids, clear_mode=True):
+        if len(env_ids) == 0:
+            return
+        self.force_anchor_active[env_ids] = False
+        self.force_anchor_latch_pending[env_ids] = False
+        self.force_anchor_local[env_ids] = 0.0
+        self.force_anchor_latched_local[env_ids] = 0.0
+        self.force_anchor_world[env_ids] = 0.0
+        self.force_anchor_velocity_local[env_ids] = 0.0
+        self.force_anchor_motion_end_step[env_ids] = 0.0
+        self.force_anchor_displacement_world[env_ids] = 0.0
+        self.force_anchor_spring_force_world[env_ids] = 0.0
+        if clear_mode:
+            self.force_anchor_mode[env_ids] = FORCE_ANCHOR_MODE_INACTIVE
+
+    def _sample_force_anchor_modes(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        modes, probabilities = self._force_anchor_distribution()
+        probability_tensor = torch.tensor(
+            probabilities, dtype=torch.float, device=self.device
+        )
+        sampled_slots = torch.multinomial(
+            probability_tensor, len(env_ids), replacement=True
+        )
+        configured_mode_ids = torch.tensor(
+            [FORCE_ANCHOR_MODE_IDS[mode] for mode in modes],
+            dtype=torch.long,
+            device=self.device,
+        )
+        self.force_anchor_mode[env_ids] = configured_mode_ids[sampled_slots]
+
+    def _sample_force_anchor_motion(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        speed_range = list(
+            self.cfg.domain_rand.force_anchor_velocity_range
+        )
+        duration_range = list(
+            self.cfg.domain_rand.force_anchor_motion_duration_s
+        )
+        if (
+            len(speed_range) != 2
+            or speed_range[0] < 0.0
+            or speed_range[1] < speed_range[0]
+        ):
+            raise ValueError(
+                "force_anchor_velocity_range must be [min, max] with 0 <= min <= max"
+            )
+        if (
+            len(duration_range) != 2
+            or duration_range[0] <= 0.0
+            or duration_range[1] < duration_range[0]
+        ):
+            raise ValueError(
+                "force_anchor_motion_duration_s must contain positive [min, max]"
+            )
+        direction = torch.randn(
+            len(env_ids), 3, dtype=torch.float, device=self.device
+        )
+        direction /= torch.linalg.norm(
+            direction, dim=1, keepdim=True
+        ).clamp_min(1e-6)
+        speed = torch_rand_float(
+            speed_range[0], speed_range[1], (len(env_ids), 1), self.device
+        )
+        self.force_anchor_velocity_local[env_ids] = direction * speed
+        duration_steps = torch_rand_float(
+            duration_range[0],
+            duration_range[1],
+            (len(env_ids), 1),
+            self.device,
+        ).view(len(env_ids)) / self.dt
+        self.force_anchor_motion_end_step[env_ids] = (
+            self.episode_length_buf[env_ids] + duration_steps
+        )
+
+    def _on_force_or_position_control_resampled(
+        self, env_ids, previous_modes
+    ):
+        """Restart anchor state when a new position/force segment begins."""
+        del previous_modes
+        if not self._uses_independent_force_anchor() or not hasattr(
+            self, "force_anchor_active"
+        ):
+            return
+        force_envs = self.force_or_position_control[env_ids] == 1
+        self._clear_force_anchor_state(env_ids)
+        force_env_ids = env_ids[force_envs]
+        self._sample_force_anchor_modes(force_env_ids)
+        self.force_anchor_latch_pending[force_env_ids] = True
+        self.freed_envs[env_ids] = False
+
+    def _force_anchor_command_frame(self):
+        """Return current yaw-only command-frame origin and quaternion."""
+        root_state = self.root_states[self.robot_actor_idxs]
+        base_quat = root_state[:, 3:7]
+        base_rpy = torch.stack(get_euler_xyz(base_quat), dim=1)
+        yaw_quat = quat_from_euler_xyz(
+            torch.zeros_like(base_rpy[:, 2]),
+            torch.zeros_like(base_rpy[:, 2]),
+            base_rpy[:, 2],
+        )
+        _, _, base_height = self._arm_mount_parameters()
+        origin = torch.zeros_like(root_state[:, 0:3])
+        origin[:, 0:2] = root_state[:, 0:2]
+        origin[:, 2] = base_height
+        return origin, yaw_quat
+
+    def _latch_force_anchor(self, env_ids):
+        """Latch the current EE in the selected force-anchor frame."""
+        if len(env_ids) == 0:
+            return
+        origin, yaw_quat = self._force_anchor_command_frame()
+        ee_position_world = self.rigid_body_state[
+            :, self.gripper_stator_index, 0:3
+        ]
+        self.force_anchor_local[env_ids] = quat_rotate_inverse(
+            yaw_quat[env_ids],
+            ee_position_world[env_ids] - origin[env_ids],
+        )
+        self.force_anchor_latched_local[env_ids] = self.force_anchor_local[
+            env_ids
+        ]
+        self.force_anchor_world[env_ids] = ee_position_world[env_ids]
+        moving_envs = env_ids[
+            self.force_anchor_mode[env_ids]
+            == FORCE_ANCHOR_MODE_ROBOT_RELATIVE_MOVING
+        ]
+        self._sample_force_anchor_motion(moving_envs)
+        self.force_anchor_active[env_ids] = True
+        self.force_anchor_latch_pending[env_ids] = False
+
+    def _advance_force_anchor_motion(self):
+        moving_envs = (
+            self.force_anchor_active
+            & (
+                self.force_anchor_mode
+                == FORCE_ANCHOR_MODE_ROBOT_RELATIVE_MOVING
+            )
+        ).nonzero(as_tuple=False).flatten()
+        if len(moving_envs) == 0:
+            return
+        expired = moving_envs[
+            self.episode_length_buf[moving_envs]
+            >= self.force_anchor_motion_end_step[moving_envs]
+        ]
+        self._sample_force_anchor_motion(expired)
+        offset_limit = self.force_anchor_offset_limit
+        if offset_limit.shape != (3,) or torch.any(offset_limit <= 0.0):
+            raise ValueError(
+                "force_anchor_offset_limit must contain 3 positive values"
+            )
+        candidate_offset = (
+            self.force_anchor_local[moving_envs]
+            - self.force_anchor_latched_local[moving_envs]
+            + self.force_anchor_velocity_local[moving_envs]
+            * float(self.sim_params.dt)
+        )
+        boundary_hit = torch.abs(candidate_offset) > offset_limit
+        velocity = self.force_anchor_velocity_local[moving_envs]
+        self.force_anchor_velocity_local[moving_envs] = torch.where(
+            boundary_hit, -velocity, velocity
+        )
+        candidate_offset = torch.maximum(
+            torch.minimum(candidate_offset, offset_limit), -offset_limit
+        )
+        self.force_anchor_local[moving_envs] = (
+            self.force_anchor_latched_local[moving_envs] + candidate_offset
+        )
+
+    def _update_force_anchor_world(self):
+        self._advance_force_anchor_motion()
+        origin, yaw_quat = self._force_anchor_command_frame()
+        updated_world = (
+            quat_rotate_inverse(
+                quat_conjugate(yaw_quat), self.force_anchor_local
+            )
+            + origin
+        )
+        robot_relative = self.force_anchor_active & (
+            (
+                self.force_anchor_mode
+                == FORCE_ANCHOR_MODE_ROBOT_RELATIVE_STATIC
+            )
+            | (
+                self.force_anchor_mode
+                == FORCE_ANCHOR_MODE_ROBOT_RELATIVE_MOVING
+            )
+        )
+        self.force_anchor_world[robot_relative] = updated_world[
+            robot_relative
+        ]
+        self.force_anchor_world[~self.force_anchor_active] = 0.0
+
     def _push_gripper(self, env_ids_all, cfg):
         """ Randomly pushes the gripper stators. Emulates an impulse by setting a randomized gripper stator velocity.
         """
@@ -1516,6 +1772,22 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if new_selected_env_ids.nelement() > 0:
             self.freed_envs[new_selected_env_ids] = torch.rand(len(new_selected_env_ids), dtype=torch.float, device=self.device,
                                         requires_grad=False) > self.cfg.domain_rand.gripper_forced_prob
+            if self._uses_independent_force_anchor():
+                new_force_envs = new_selected_env_ids[
+                    force_control_envs[new_selected_env_ids]
+                ]
+                newly_freed = new_force_envs[self.freed_envs[new_force_envs]]
+                newly_forced = new_force_envs[~self.freed_envs[new_force_envs]]
+                self._clear_force_anchor_state(newly_freed)
+                needs_mode = newly_forced[
+                    self.force_anchor_mode[newly_forced]
+                    == FORCE_ANCHOR_MODE_INACTIVE
+                ]
+                self._sample_force_anchor_modes(needs_mode)
+                needs_latch = newly_forced[
+                    ~self.force_anchor_active[newly_forced]
+                ]
+                self.force_anchor_latch_pending[needs_latch] = True
             for axis, value_range in enumerate(
                 force_command_ranges(cfg.commands)
             ):
@@ -1629,8 +1901,37 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
 
         # ee_position_error = torch.sum(torch.abs(ee_position_cmd_world - ee_pos_world), dim=1)
         # self.forces[:, self.gripper_stator_index, :3] = torch.clamp(((self.ee_position_cmd_world - self.ee_pos_world) * self.cfg.domain_rand.gripper_force_kp*3 +  (0 - self.gripper_velocity) * self.cfg.domain_rand.gripper_force_kd), self.cfg.domain_rand.max_push_force_xyz_gripper_freed[0], self.cfg.domain_rand.max_push_force_xyz_gripper_freed[1])
-        self.forces[:, self.gripper_stator_index, :3] = torch.clamp(((self.ee_position_cmd_world - self.ee_pos_world) * self.gripper_force_kps +  (0 - self.gripper_velocity) * self.gripper_force_kds), self.cfg.domain_rand.max_push_force_xyz_gripper_freed[0], self.cfg.domain_rand.max_push_force_xyz_gripper_freed[1])
-        self.forces[self.freed_envs, self.gripper_stator_index, :3] = 0
+        if self._uses_independent_force_anchor():
+            self.force_anchor_active[~force_control_envs] = False
+            self.force_anchor_latch_pending[~force_control_envs] = False
+            self.force_anchor_active[self.freed_envs] = False
+            self.force_anchor_latch_pending[self.freed_envs] = False
+            latch_envs = (
+                self.force_anchor_latch_pending
+                & force_control_envs
+                & ~self.freed_envs
+            ).nonzero(as_tuple=False).flatten()
+            self._latch_force_anchor(latch_envs)
+            self._update_force_anchor_world()
+            self.force_anchor_displacement_world[:] = (
+                self.force_anchor_world - self.ee_pos_world
+            )
+            self.force_anchor_displacement_world[
+                ~self.force_anchor_active
+            ] = 0.0
+            spring_force = torch.clamp(
+                self.force_anchor_displacement_world
+                * self.gripper_force_kps
+                - self.gripper_velocity * self.gripper_force_kds,
+                self.cfg.domain_rand.max_push_force_xyz_gripper_freed[0],
+                self.cfg.domain_rand.max_push_force_xyz_gripper_freed[1],
+            )
+            spring_force[~self.force_anchor_active] = 0.0
+            self.force_anchor_spring_force_world[:] = spring_force
+            self.forces[:, self.gripper_stator_index, :3] = spring_force
+        else:
+            self.forces[:, self.gripper_stator_index, :3] = torch.clamp(((self.ee_position_cmd_world - self.ee_pos_world) * self.gripper_force_kps +  (0 - self.gripper_velocity) * self.gripper_force_kds), self.cfg.domain_rand.max_push_force_xyz_gripper_freed[0], self.cfg.domain_rand.max_push_force_xyz_gripper_freed[1])
+            self.forces[self.freed_envs, self.gripper_stator_index, :3] = 0
         
         # don't force the position envs
         self.forces[position_control_envs, self.gripper_stator_index, :3] = 0
@@ -2165,6 +2466,51 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
             self.force_control_dof_pos_init[:] = self.force_control_dof_pos_init_array[self.init_idx, :]
 
         self.freed_envs = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        self.force_anchor_local = torch.zeros(
+            self.num_envs, 3, dtype=torch.float, device=self.device,
+            requires_grad=False,
+        )
+        self.force_anchor_latched_local = torch.zeros_like(
+            self.force_anchor_local
+        )
+        self.force_anchor_world = torch.zeros_like(self.force_anchor_local)
+        self.force_anchor_velocity_local = torch.zeros_like(
+            self.force_anchor_local
+        )
+        self.force_anchor_motion_end_step = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device,
+            requires_grad=False,
+        )
+        self.force_anchor_offset_limit = torch.tensor(
+            getattr(
+                self.cfg.domain_rand,
+                "force_anchor_offset_limit",
+                [1.0, 1.0, 1.0],
+            ),
+            dtype=torch.float,
+            device=self.device,
+            requires_grad=False,
+        )
+        self.force_anchor_displacement_world = torch.zeros_like(
+            self.force_anchor_local
+        )
+        self.force_anchor_spring_force_world = torch.zeros_like(
+            self.force_anchor_local
+        )
+        self.force_anchor_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device,
+            requires_grad=False,
+        )
+        self.force_anchor_latch_pending = torch.zeros_like(
+            self.force_anchor_active
+        )
+        self.force_anchor_mode = torch.full(
+            (self.num_envs,),
+            FORCE_ANCHOR_MODE_INACTIVE,
+            dtype=torch.long,
+            device=self.device,
+            requires_grad=False,
+        )
             
 
         if self.cfg.commands.teleop_occulus:

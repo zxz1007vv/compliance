@@ -689,6 +689,7 @@ class CommandLifecycleMixin:
         )
 
     def _resample_force_or_position_control(self, env_ids):
+        previous_modes = self.force_or_position_control[env_ids].clone()
         self.force_or_position_control[env_ids] = sample_control_modes(
             self.cfg.commands.hybrid_mode,
             len(env_ids),
@@ -697,6 +698,11 @@ class CommandLifecycleMixin:
         self.commands[
             env_ids, INDEX_FORCE_OR_POSITION_INDICATOR
         ] = self.force_or_position_control[env_ids]
+        lifecycle_hook = getattr(
+            self, "_on_force_or_position_control_resampled", None
+        )
+        if lifecycle_hook is not None:
+            lifecycle_hook(env_ids, previous_modes)
 
     def _update_command_ranges(self, env_ids):
         constrict_indices = self.cfg.rewards.constrict_indices

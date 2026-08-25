@@ -166,6 +166,35 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
         clip = float(self.cfg.normalization.clip_actions)
         limit_margin = float(self.cfg.diagnostics.hard_limit_margin)
 
+        if hasattr(self, "force_anchor_active"):
+            metrics["force_anchor/active"] = self.force_anchor_active.float()
+            metrics["force_anchor/mode"] = self.force_anchor_mode.float()
+            metrics["force_anchor/displacement_norm_m"] = torch.linalg.norm(
+                self.force_anchor_displacement_world, dim=1
+            )
+            metrics["force_anchor/velocity_local_norm_mps"] = torch.linalg.norm(
+                self.force_anchor_velocity_local, dim=1
+            )
+            metrics["force_anchor/spring_force_norm_n"] = torch.linalg.norm(
+                self.force_anchor_spring_force_world, dim=1
+            )
+            for axis_index, axis_name in enumerate(("x", "y", "z")):
+                metrics[f"force_anchor/local_{axis_name}_m"] = (
+                    self.force_anchor_local[:, axis_index]
+                )
+                metrics[f"force_anchor/world_{axis_name}_m"] = (
+                    self.force_anchor_world[:, axis_index]
+                )
+                metrics[f"force_anchor/velocity_local_{axis_name}_mps"] = (
+                    self.force_anchor_velocity_local[:, axis_index]
+                )
+                metrics[f"force_anchor/displacement_{axis_name}_m"] = (
+                    self.force_anchor_displacement_world[:, axis_index]
+                )
+                metrics[f"force_anchor/spring_force_{axis_name}_n"] = (
+                    self.force_anchor_spring_force_world[:, axis_index]
+                )
+
         for dof_name in self.cfg.asset.leg_dof_names:
             dof_index = self.dof_name_to_index[dof_name]
             leg_name, joint_name, _ = dof_name.split("_", 2)

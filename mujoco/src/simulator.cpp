@@ -24,6 +24,16 @@ struct MujocoSimulator::Impl {
   std::vector<int> actuator_ids;
   int base_free_joint = -1;
   int end_effector_body = -1;
+  std::array<double, 3> force_field_anchor_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> spring_force_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> last_spring_force_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> last_applied_force_world{{0.0, 0.0, 0.0}};
+  MousePerturbationDebugState last_mouse_perturbation;
+  double force_field_stiffness = 0.0;
+  double force_field_damping = 0.0;
+  double force_field_limit = 0.0;
+  bool force_field_active = false;
+  bool spring_force_present = false;
 #ifdef MUJOCO_HAS_CLASSIC_VIEWER
   mjvCamera camera{};
   mjvOption visual_options{};
@@ -117,6 +127,16 @@ struct MujocoSimulator::Impl {
       data->qpos[base_qpos + 3 + component] = profile.initial_base_quaternion_wxyz[component];
     for (std::size_t index = 0; index < qpos_addresses.size(); ++index)
       data->qpos[qpos_addresses[index]] = profile.default_dof_positions[index];
+    force_field_anchor_world = {{0.0, 0.0, 0.0}};
+    spring_force_world = {{0.0, 0.0, 0.0}};
+    last_spring_force_world = {{0.0, 0.0, 0.0}};
+    last_applied_force_world = {{0.0, 0.0, 0.0}};
+    last_mouse_perturbation = {};
+    force_field_stiffness = 0.0;
+    force_field_damping = 0.0;
+    force_field_limit = 0.0;
+    force_field_active = false;
+    spring_force_present = false;
     mj_forward(model, data);
   }
 };
@@ -140,12 +160,102 @@ RobotState MujocoSimulator::state() const {
   return result;
 }
 
+void MujocoSimulator::start_end_effector_force_field(
+    double stiffness, double damping, double force_limit) {
+  if (stiffness <= 0.0 || damping < 0.0 || force_limit <= 0.0)
+    throw std::runtime_error("Invalid end-effector force-field parameters");
+  stop_end_effector_force_field();
+  for (int axis = 0; axis < 3; ++axis) {
+    impl_->force_field_anchor_world[axis] =
+        impl_->data->xpos[3 * impl_->end_effector_body + axis];
+  }
+  impl_->force_field_stiffness = stiffness;
+  impl_->force_field_damping = damping;
+  impl_->force_field_limit = force_limit;
+  impl_->force_field_active = true;
+}
+
+void MujocoSimulator::stop_end_effector_force_field() {
+  if (impl_->spring_force_present) {
+    mjtNum* applied =
+        impl_->data->xfrc_applied + 6 * impl_->end_effector_body;
+    for (int axis = 0; axis < 3; ++axis)
+      applied[axis] -= impl_->spring_force_world[axis];
+  }
+  impl_->spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->last_spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->force_field_active = false;
+  impl_->spring_force_present = false;
+}
+
+bool MujocoSimulator::end_effector_force_field_active() const {
+  return impl_->force_field_active;
+}
+
+std::array<double, 3>
+MujocoSimulator::end_effector_force_field_anchor_world() const {
+  return impl_->force_field_anchor_world;
+}
+
+std::array<double, 3> MujocoSimulator::end_effector_spring_force_world() const {
+  return impl_->last_spring_force_world;
+}
+
 void MujocoSimulator::step(const std::vector<double>& torque) {
   if (torque.size() != impl_->actuator_ids.size())
     throw std::runtime_error("Torque vector has the wrong dimension");
   std::fill(impl_->data->ctrl, impl_->data->ctrl + impl_->model->nu, 0.0);
   for (std::size_t index = 0; index < torque.size(); ++index)
     impl_->data->ctrl[impl_->actuator_ids[index]] = torque[index];
+  mjtNum* applied =
+      impl_->data->xfrc_applied + 6 * impl_->end_effector_body;
+  // xfrc_applied persists in headless mode. Remove our previous sample before
+  // calculating the field again; Viewer Sync clears it independently.
+  if (impl_->spring_force_present) {
+    for (int axis = 0; axis < 3; ++axis)
+      applied[axis] -= impl_->spring_force_world[axis];
+  }
+  impl_->spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->spring_force_present = false;
+  if (impl_->force_field_active) {
+    std::array<mjtNum, 6> velocity_world{};
+    mj_objectVelocity(impl_->model, impl_->data, mjOBJ_BODY,
+                      impl_->end_effector_body, velocity_world.data(), 0);
+    for (int axis = 0; axis < 3; ++axis) {
+      const double displacement =
+          impl_->force_field_anchor_world[axis] -
+          impl_->data->xpos[3 * impl_->end_effector_body + axis];
+      impl_->spring_force_world[axis] = std::clamp(
+          impl_->force_field_stiffness * displacement -
+              impl_->force_field_damping * velocity_world[3 + axis],
+          -impl_->force_field_limit, impl_->force_field_limit);
+      applied[axis] += impl_->spring_force_world[axis];
+    }
+    impl_->spring_force_present = true;
+  }
+  impl_->last_spring_force_world = impl_->spring_force_world;
+  for (int axis = 0; axis < 3; ++axis) {
+    impl_->last_applied_force_world[axis] =
+        impl_->data->xfrc_applied[6 * impl_->end_effector_body + axis];
+  }
+#ifdef MUJOCO_HAS_CLASSIC_VIEWER
+  impl_->last_mouse_perturbation = {};
+  if (impl_->viewer && impl_->perturb.active && impl_->perturb.select > 0) {
+    const int body = impl_->perturb.select;
+    impl_->last_mouse_perturbation.active = true;
+    const char* body_name = mj_id2name(impl_->model, mjOBJ_BODY, body);
+    impl_->last_mouse_perturbation.body_name =
+        body_name ? body_name : "<unnamed>";
+    for (int axis = 0; axis < 3; ++axis) {
+      impl_->last_mouse_perturbation.force_world[axis] =
+          impl_->data->xfrc_applied[6 * body + axis];
+      if (body == impl_->end_effector_body && impl_->spring_force_present) {
+        impl_->last_mouse_perturbation.force_world[axis] -=
+            impl_->spring_force_world[axis];
+      }
+    }
+  }
+#endif
   mj_step(impl_->model, impl_->data);
   // Isaac Gym applies each URDF maxJointVelocity in the PhysX articulation.
   // MuJoCo hinge joints do not have an equivalent velocity attribute, so
@@ -194,6 +304,42 @@ double MujocoSimulator::end_effector_contact_force() const {
     magnitude += std::abs(wrench[0]);
   }
   return magnitude;
+}
+
+std::array<double, 3> MujocoSimulator::end_effector_contact_force_world() const {
+  std::array<double, 3> force_world{{0.0, 0.0, 0.0}};
+  std::array<mjtNum, 6> wrench_contact{};
+  for (int index = 0; index < impl_->data->ncon; ++index) {
+    const mjContact& contact = impl_->data->contact[index];
+    const int body1 = impl_->model->geom_bodyid[contact.geom1];
+    const int body2 = impl_->model->geom_bodyid[contact.geom2];
+    if (body1 != impl_->end_effector_body && body2 != impl_->end_effector_body)
+      continue;
+
+    mj_contactForce(
+        impl_->model, impl_->data, index, wrench_contact.data());
+    // contact.frame stores the normal and two tangent axes as rows. MuJoCo's
+    // wrench acts on geom2; reverse it when the end effector is geom1.
+    const double end_effector_sign =
+        body2 == impl_->end_effector_body ? 1.0 : -1.0;
+    for (int world_axis = 0; world_axis < 3; ++world_axis) {
+      double component = 0.0;
+      for (int contact_axis = 0; contact_axis < 3; ++contact_axis) {
+        component += contact.frame[3 * contact_axis + world_axis] *
+                     wrench_contact[contact_axis];
+      }
+      force_world[world_axis] += end_effector_sign * component;
+    }
+  }
+  return force_world;
+}
+
+std::array<double, 3> MujocoSimulator::end_effector_applied_force_world() const {
+  return impl_->last_applied_force_world;
+}
+
+MousePerturbationDebugState MujocoSimulator::mouse_perturbation_debug_state() const {
+  return impl_->last_mouse_perturbation;
 }
 
 EndEffectorDebugState MujocoSimulator::end_effector_debug_state() const {
@@ -265,6 +411,8 @@ void MujocoSimulator::render() {
     impl_->viewer_attached = true;
   }
   impl_->viewer->Sync();
+  // Passive Sync clears xfrc_applied and writes the current mouse perturbation.
+  impl_->spring_force_present = false;
 #endif
 }
 

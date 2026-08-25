@@ -8,7 +8,7 @@ paths:
   scene_path: ../models/zgwsarm/scene_terrain.xml
   policy_backend: torchscript
   # An absolute exported policy path, such as .../policy_001200.pt, is also valid.
-  policy_path: ../policies/zgwsarm/policy.pt
+  policy_path: /home/user/PROJECT/compliance/logs/zgwsarm_compliance/2026-08-24_18-44-10_wbc_release/exported/policies/policy_latest.pt
 
 runtime:
   viewer: true
@@ -21,6 +21,12 @@ runtime:
 teleoperation:
   deadzone: 0.10
   force_limit: 30.0
+  # In force mode, latch the current EE world point and create the same
+  # virtual spring-damper force field used during training.
+  force_field_enabled: true
+  force_field_stiffness: 200.0  # N/m
+  force_field_damping: 6.0      # N*s/m
+  force_field_limit: 30.0       # per-axis clamp, N
   position_rates: [0.20, 0.75, 0.75]
   wrist_rate: 0.75
   gripper_rate: 0.75

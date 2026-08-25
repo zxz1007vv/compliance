@@ -28,6 +28,10 @@ struct SimulatorConfig {
   std::optional<std::vector<double>> teleop_position_rates;
   std::optional<double> teleop_wrist_rate;
   std::optional<double> teleop_gripper_rate;
+  bool force_field_enabled = true;
+  double force_field_stiffness = 200.0;
+  double force_field_damping = 6.0;
+  double force_field_limit = 70.0;
   std::optional<double> startup_fold_duration;
   std::optional<double> startup_stand_duration;
   std::optional<std::vector<std::string>> startup_dog_dof_names;

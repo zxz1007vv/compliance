@@ -59,6 +59,10 @@ run 导出精确的 TorchScript、观测/关节/控制合同，支持 F710 位�
 构建、手柄映射和运行命令见
 [mujoco/README.md](mujoco/README.md)。
 
+MuJoCo 的 force mode 会在切换时锁存当前末端世界坐标，并用可配置的虚拟弹簧—阻尼
+力场复现训练环境；力命令是策略跟踪目标，不会被直接施加为外力。Viewer 也支持用
+`Ctrl+右键` 拖动选中的机械臂刚体进行零力命令柔顺性测试。
+
 导出策略到 `mujoco/policies/` 后，使用
 `mujoco/build/mujoco_sim --task zgwsarm_compliance` 或
 `mujoco/build/mujoco_sim --task b1_z1_ik` 显式选择任务。机器人 MJCF 路径、

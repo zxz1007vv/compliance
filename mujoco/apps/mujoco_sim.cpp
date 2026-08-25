@@ -36,12 +36,31 @@ struct Options {
   double status_interval_seconds = 1.0;
   bool realtime = true;
   bool viewer = false;
+  bool force_field_enabled = true;
+  double force_field_stiffness = 200.0;
+  double force_field_damping = 6.0;
+  double force_field_limit = 70.0;
 };
 
 constexpr std::array<const char*, 2> kTasks{{"zgwsarm_compliance", "b1_z1_ik"}};
 
 bool supported_task(const std::string& task) {
   return std::find(kTasks.begin(), kTasks.end(), task) != kTasks.end();
+}
+
+std::array<double, 3> difference(const std::array<double, 3>& actual,
+                                 const std::array<double, 3>& command) {
+  return {{actual[0] - command[0], actual[1] - command[1],
+           actual[2] - command[2]}};
+}
+
+double vector_norm(const std::array<double, 3>& value) {
+  return std::sqrt(value[0] * value[0] + value[1] * value[1] +
+                   value[2] * value[2]);
+}
+
+void print_vector(const std::array<double, 3>& value) {
+  std::cout << '(' << value[0] << ',' << value[1] << ',' << value[2] << ')';
 }
 
 void print_tasks() {
@@ -54,6 +73,7 @@ void print_usage() {
          "                  [--bundle DIR] [--repo-root DIR] [--scene XML]\n"
          "                  [--policy PT] [--steps N] [--status-interval SEC]\n"
          "                  [--viewer|--headless] [--realtime|--no-realtime]\n"
+         "                  [--force-field|--no-force-field]\n"
          "       mujoco_sim --list-tasks\n\n"
          "The default task config is config/<task>.yaml. Command-line arguments\n"
          "override values from that YAML file.\n";
@@ -123,6 +143,10 @@ Options parse(int argc, char** argv) {
   options.status_interval_seconds = config.status_interval_seconds;
   options.realtime = config.realtime;
   options.viewer = config.viewer;
+  options.force_field_enabled = config.force_field_enabled;
+  options.force_field_stiffness = config.force_field_stiffness;
+  options.force_field_damping = config.force_field_damping;
+  options.force_field_limit = config.force_field_limit;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     const auto next = [&]() -> std::string {
@@ -141,6 +165,10 @@ Options parse(int argc, char** argv) {
     else if (argument == "--realtime") options.realtime = true;
     else if (argument == "--viewer") options.viewer = true;
     else if (argument == "--headless") options.viewer = false;
+    else if (argument == "--force-field")
+      options.force_field_enabled = true;
+    else if (argument == "--no-force-field")
+      options.force_field_enabled = false;
     else if (argument == "--help" || argument == "--list-tasks") continue;
     else throw std::runtime_error("Unknown option: " + argument);
   }
@@ -182,6 +210,13 @@ int run(int argc, char** argv) {
               << profile.startup_stand_duration << " s), B=RL/policy takeover, "
                  "X=position/force, Y=reset/dog zero + arm hold\n"
               << "RB/LB=position radius or force Fz; RT/LT/Start/Back=unused\n"
+              << "mouse compliance test=double-left-click an arm link, then "
+                 "hold Ctrl+right-drag\n"
+              << "force field="
+              << (options.force_field_enabled ? "enabled" : "disabled")
+              << " (K=" << options.force_field_stiffness
+              << " N/m, D=" << options.force_field_damping
+              << " N*s/m, axis_limit=" << options.force_field_limit << " N)\n"
               << "arm_q_order=";
     for (std::size_t index = 0; index < profile.arm_dof_names.size(); ++index) {
       if (index != 0) std::cout << ',';
@@ -235,6 +270,18 @@ int run(int argc, char** argv) {
             action = controller.prepare_action(policy.infer(history.values()));
           else
             std::fill(action.begin(), action.end(), 0.0f);
+          const bool force_field_should_be_active =
+              options.force_field_enabled && controller.policy_active() &&
+              commands.force_mode();
+          if (force_field_should_be_active &&
+              !simulation.end_effector_force_field_active()) {
+            simulation.start_end_effector_force_field(
+                options.force_field_stiffness, options.force_field_damping,
+                options.force_field_limit);
+          } else if (!force_field_should_be_active &&
+                     simulation.end_effector_force_field_active()) {
+            simulation.stop_end_effector_force_field();
+          }
           for (int substep = 0; substep < profile.decimation; ++substep) {
             const auto state = simulation.state();
             const auto control = controller.compute(action, state, commands);
@@ -263,24 +310,69 @@ int run(int argc, char** argv) {
                 command_radius * std::cos(command_pitch) * std::sin(command_yaw),
                 -command_radius * std::sin(command_pitch),
             }};
+            const std::array<double, 3> command_spherical{{
+                command_radius, command_pitch, command_yaw}};
+            const auto spherical_error =
+                difference(ee.arm_spherical, command_spherical);
+            const auto position_error =
+                difference(ee.arm_position, command_arm_position);
+            const std::array<double, 3> force_command{{
+                command[12], command[13], command[14]}};
+            const auto spring_force_world =
+                simulation.end_effector_spring_force_world();
+            const double qw = robot_state.base_quaternion[0];
+            const double qx = robot_state.base_quaternion[1];
+            const double qy = robot_state.base_quaternion[2];
+            const double qz = robot_state.base_quaternion[3];
+            const double base_yaw = std::atan2(
+                2.0 * (qw * qz + qx * qy),
+                1.0 - 2.0 * (qy * qy + qz * qz));
+            const double cos_yaw = std::cos(base_yaw);
+            const double sin_yaw = std::sin(base_yaw);
+            const std::array<double, 3> spring_force_yaw{{
+                cos_yaw * spring_force_world[0] +
+                    sin_yaw * spring_force_world[1],
+                -sin_yaw * spring_force_world[0] +
+                    cos_yaw * spring_force_world[1],
+                spring_force_world[2],
+            }};
+            const auto force_error =
+                difference(spring_force_yaw, force_command);
             std::cout << std::fixed << std::setprecision(3)
-                      << "t=" << simulation.time() << " mode="
+                      << "==================== STATUS ====================\n"
+                      << "step=" << control_steps << "  t=" << simulation.time()
+                      << " s  mode="
                       << (commands.force_mode() ? "force" : "position")
-                      << " control_state=" << mujoco::RobotControlModeName(controller.mode())
-                      << " gamepad=" << commands.input_active()
-                      << " cmd(vx,yaw)=" << command[0] << ',' << command[2] << '\n'
-                      << "  ee_cmd_sph(r,p,y)=(" << command_radius << ','
-                      << command_pitch << ',' << command_yaw << ")"
-                      << " ee_actual_sph=(" << ee.arm_spherical[0] << ','
-                      << ee.arm_spherical[1] << ',' << ee.arm_spherical[2] << ")\n"
-                      << "  ee_cmd_arm_xyz=(" << command_arm_position[0] << ','
-                      << command_arm_position[1] << ',' << command_arm_position[2] << ")"
-                      << " ee_actual_arm_xyz=(" << ee.arm_position[0] << ','
-                      << ee.arm_position[1] << ',' << ee.arm_position[2] << ")\n"
-                      << "  ee_force_cmd_xyz=(" << command[12] << ',' << command[13]
-                      << ',' << command[14] << ")"
-                      << " ee_contact_N=" << simulation.end_effector_contact_force() << '\n'
-                      << "  arm_q(rad)=(";
+                      << "  control=" << mujoco::RobotControlModeName(controller.mode())
+                      << "  gamepad=" << commands.input_active() << '\n'
+                      << "base_cmd: vx=" << command[0]
+                      << " m/s  yaw_rate=" << command[2] << " rad/s\n"
+                      << "---------------- POSITION TRACKING ----------------\n";
+            if (commands.force_mode())
+              std::cout << "inactive in force mode; legacy position slots are diagnostics only\n";
+            std::cout << "spherical [m,rad,rad]: cmd=";
+            print_vector(command_spherical);
+            std::cout << "  actual=";
+            print_vector(ee.arm_spherical);
+            std::cout << "  error(actual-cmd)=";
+            print_vector(spherical_error);
+            std::cout << '\n' << "arm_xyz [m]:           cmd=";
+            print_vector(command_arm_position);
+            std::cout << "  actual=";
+            print_vector(ee.arm_position);
+            std::cout << "  error(actual-cmd)=";
+            print_vector(position_error);
+            std::cout << "  |error|=" << vector_norm(position_error) << " m\n"
+                      << "---------------- FORCE / COMPLIANCE ---------------\n"
+                      << "force_yaw [N]: cmd=";
+            print_vector(force_command);
+            std::cout << "  actual=";
+            print_vector(spring_force_yaw);
+            std::cout << "  error(actual-cmd)=";
+            print_vector(force_error);
+            std::cout << "  |error|=" << vector_norm(force_error) << " N\n"
+                      << "------------------- JOINT STATE -------------------\n"
+                      << "arm_q [rad]=(";
             for (std::size_t index = 0; index < profile.arm_dof_names.size(); ++index) {
               if (index != 0) std::cout << ',';
               std::cout << robot_state.joint_position[
@@ -291,7 +383,7 @@ int run(int argc, char** argv) {
               std::cout << " wrist_target=" << commands.wrist_target();
             if (commands.has_gripper_target())
               std::cout << " gripper_target=" << commands.gripper_target();
-            std::cout << '\n';
+            std::cout << "\n================================================\n";
             last_report = now;
           }
           if (options.realtime) {

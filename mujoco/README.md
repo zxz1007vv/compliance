@@ -123,6 +123,8 @@ mujoco/build/mujoco_sim --task zgwsarm_compliance \
 | `runtime.viewer/realtime/steps` | 界面、实时节拍和有限步运行 |
 | `runtime.status_interval_seconds` | 终端状态输出周期，`0` 表示关闭 |
 | `teleoperation.*` | 手柄 deadzone、力/位置/腕/夹爪速度 |
+| `teleoperation.force_field_enabled` | force mode 下启用固定世界锚点的虚拟弹簧力场 |
+| `teleoperation.force_field_stiffness/damping/limit` | 力场的 K、D 和逐轴力限幅 |
 | `startup.*` | A 键匍匐/起立姿态、PD 增益和两段插值时间 |
 
 `policy_path` 可以是相对路径，也可以直接写绝对路径。例如下面这个文件是仓库导出器生成的
@@ -179,14 +181,35 @@ RT、LT、Start、Back 不参与控制，也不需要按住任何使能键。
 | D-pad 上/下 | B1+Z1 夹爪；ZGWSARM 无可驱动夹爪自由度 | 同左 |
 
 这里的 D-pad 是手柄左侧十字方向键，不是左摇杆。摇杆有 0.10 deadzone；位置目标采用
-积分并受训练命令范围限制，力目标是直接映射并受各任务力范围限制。力模式观测会把位置
-命令 15:18 清零，与训练端 `RCSensor` 一致。状态行里的 `gamepad=1` 表示 SDL 已识别
-手柄；若一直为 `0`，可运行 `mujoco/build/mujoco_gamepad_probe` 查看原始轴和按键。
+积分并受训练命令范围限制，力目标是直接映射并受各任务力范围限制。默认启用
+`teleoperation.force_field_enabled`：进入 force mode 且 RL 接管时，程序把当时的末端世界
+坐标锁存为固定锚点 `p_anchor`。每个物理子步向末端施加
+`F_spring = clamp(K (p_anchor - p_ee) - D v_ee)`，与训练环境的虚拟弹簧—阻尼力场一致。
+力命令 XYZ 只作为策略要跟踪的目标，不会被直接写成外力；策略需要移动末端、压缩虚拟弹簧，
+使实际 `F_spring` 接近期望力。切回 position mode、退出 RL 或 reset 时力场关闭，下次进入
+force mode 会在新的当前位置重新锁存锚点。
+力模式观测会把位置命令 15:18 清零，与训练端 `RCSensor` 一致。状态行里的 `gamepad=1`
+表示 SDL 已识别手柄；若一直为 `0`，可运行 `mujoco/build/mujoco_gamepad_probe` 查看原始轴
+和按键。可用 `--no-force-field` 临时关闭虚拟力场，只保留策略观测和鼠标扰动。
 
-状态输出会同时打印 `ee_cmd_sph`/`ee_actual_sph`（机械臂坐标系下的半径、俯仰、偏航）、
-`ee_cmd_arm_xyz`/`ee_actual_arm_xyz`、力命令、接触力大小，以及按启动时
-`arm_q_order` 顺序排列的实际机械臂关节角。这样可以直接判断右摇杆改变了哪个命令、策略
-是否让末端跟随。ZGWSARM 启动时会明确打印 `gripper=unavailable`；其部署动作维度为
+### 鼠标柔顺性测试
+
+MuJoCo 官方 Viewer 保留右键给相机，因此拖动刚体使用标准 perturbation 操作：
+
+1. 切到 force mode，并把 `Fx/Fy/Fz` 保持为零；
+2. 在机械臂连杆上双击鼠标左键，选中的刚体会高亮；
+3. 按住 `Ctrl` 和鼠标右键拖动，对选中刚体施加平移扰动力；
+4. 松开鼠标后扰动力立即消失，观察机械臂和四足是否柔顺恢复且没有失稳。
+
+`Shift+Ctrl+右键` 改变拖动平面。鼠标 perturbation 与虚拟弹簧力可以叠加，
+但做零命令柔顺性测试时应先确认日志中的 `force_yaw` 命令项为零。
+
+状态输出按位置跟踪、力/柔顺性和关节状态分块。位置部分同时打印球坐标、机械臂 XYZ
+的命令值、实际值和误差；force mode 下位置目标对策略无效，日志会明确标记 inactive。
+力部分压缩为一行 `force_yaw`，只显示目标力、实际虚拟弹簧力、逐轴误差和误差模长，便于
+连续观察。接触反力不会被误当成训练中的实际力。`arm_q` 按启动时 `arm_q_order` 的顺序
+排列。这样可以直接判断右摇杆改变了哪个命令、策略是否让末端跟随。ZGWSARM 启动时会明确打印
+`gripper=unavailable`；其部署动作维度为
 16 个四足关节加 6 个机械臂关节，当前模型没有夹爪关节或执行器，不能通过映射产生闭合动作。
 
 ## 5. 关键一致性约束

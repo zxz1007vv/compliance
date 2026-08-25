@@ -73,6 +73,12 @@ int main() {
     expect(launch.task_name == "zgwsarm_compliance", "launch task failed");
     expect(launch.policy_backend == "torchscript", "launch backend failed");
     expect(launch.viewer && launch.realtime, "launch booleans failed");
+    expect(launch.force_field_enabled,
+           "force field must default on");
+    expect(launch.force_field_stiffness > 0.0 &&
+               launch.force_field_damping >= 0.0 &&
+               launch.force_field_limit > 0.0,
+           "force-field settings must be physically valid");
     expect(launch.scene_path.filename() == "scene_terrain.xml", "launch scene failed");
     expect(launch.teleop_position_rates && launch.teleop_position_rates->size() == 3,
            "launch teleoperation overrides failed");

@@ -112,6 +112,13 @@ if(MUJOCO_BUILD_SIMULATOR)
     target_link_libraries(mujoco_simulator PUBLIC mujoco_core mujoco::mujoco)
     target_compile_options(mujoco_simulator PRIVATE
       -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
+    if(MUJOCO_BUILD_TESTS)
+      add_executable(mujoco_simulator_tests tests/simulator_tests.cpp)
+      target_link_libraries(mujoco_simulator_tests PRIVATE mujoco_simulator)
+      target_compile_definitions(mujoco_simulator_tests PRIVATE
+        MUJOCO_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+      add_test(NAME mujoco_simulator_tests COMMAND mujoco_simulator_tests)
+    endif()
     find_package(glfw3 QUIET)
     set(MUJOCO_SIMULATE_SOURCE_DIR "")
     foreach(candidate

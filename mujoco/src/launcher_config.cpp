@@ -214,6 +214,14 @@ SimulatorConfig SimulatorConfig::Load(const std::filesystem::path& path) {
   result.teleop_position_rates = optional_numbers(document, teleoperation, "position_rates");
   result.teleop_wrist_rate = optional_number(document, teleoperation, "wrist_rate");
   result.teleop_gripper_rate = optional_number(document, teleoperation, "gripper_rate");
+  result.force_field_enabled = boolean(
+      document, teleoperation, "force_field_enabled", true);
+  result.force_field_stiffness = number(
+      document, teleoperation, "force_field_stiffness", 200.0);
+  result.force_field_damping = number(
+      document, teleoperation, "force_field_damping", 6.0);
+  result.force_field_limit = number(
+      document, teleoperation, "force_field_limit", 70.0);
   if (startup) {
     result.startup_fold_duration = optional_number(document, startup, "fold_duration_seconds");
     result.startup_stand_duration = optional_number(document, startup, "stand_duration_seconds");
@@ -244,6 +252,11 @@ SimulatorConfig SimulatorConfig::Load(const std::filesystem::path& path) {
   require_nonnegative(result.teleop_force_limit, "teleoperation.force_limit");
   require_nonnegative(result.teleop_wrist_rate, "teleoperation.wrist_rate");
   require_nonnegative(result.teleop_gripper_rate, "teleoperation.gripper_rate");
+  if (result.force_field_stiffness <= 0.0 ||
+      result.force_field_damping < 0.0 || result.force_field_limit <= 0.0) {
+    throw std::runtime_error(
+        "force-field stiffness/limit must be positive and damping nonnegative");
+  }
   if ((result.startup_fold_duration && *result.startup_fold_duration <= 0.0) ||
       (result.startup_stand_duration && *result.startup_stand_duration <= 0.0)) {
     throw std::runtime_error("startup interpolation durations must be positive");

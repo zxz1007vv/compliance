@@ -48,6 +48,7 @@ INDEX_FORCE_OR_POSITION_INDICATOR = 22
 
 COMMAND_DIMENSION = 23
 VALID_CONTROL_MODES = ("position", "force", "binary", "mixed")
+PLANAR_COMMAND_MIXTURE_MODES = ("stand", "linear_x", "yaw", "arc")
 
 TRANSFORM_BASE_ARM_X = 0.2
 TRANSFORM_BASE_ARM_Z = 0.1585
@@ -213,6 +214,42 @@ def validate_control_mode(mode):
         choices = ", ".join(VALID_CONTROL_MODES)
         raise ValueError(f"Unknown control mode {mode!r}; choose one of: {choices}")
     return mode
+
+
+def apply_planar_command_mixture(commands, env_ids, probabilities):
+    """Create explicit stand/linear/yaw/arc slices after continuous sampling."""
+    if probabilities is None or len(env_ids) == 0:
+        return
+    if len(probabilities) != len(PLANAR_COMMAND_MIXTURE_MODES):
+        raise ValueError(
+            "planar_command_mixture must contain probabilities for "
+            + ", ".join(PLANAR_COMMAND_MIXTURE_MODES)
+        )
+    probabilities = torch.as_tensor(
+        probabilities, dtype=commands.dtype, device=commands.device
+    )
+    if torch.any(probabilities < 0.0) or not torch.isclose(
+        probabilities.sum(),
+        torch.tensor(1.0, dtype=commands.dtype, device=commands.device),
+    ):
+        raise ValueError("planar_command_mixture must be non-negative and sum to 1")
+
+    draws = torch.rand(len(env_ids), device=commands.device)
+    boundaries = torch.cumsum(probabilities, dim=0)
+    stand = env_ids[draws < boundaries[0]]
+    linear_x = env_ids[
+        torch.logical_and(boundaries[0] <= draws, draws < boundaries[1])
+    ]
+    yaw = env_ids[
+        torch.logical_and(boundaries[1] <= draws, draws < boundaries[2])
+    ]
+
+    commands[stand, :3] = 0.0
+    commands[linear_x, 1:3] = 0.0
+    commands[yaw, :2] = 0.0
+    # Arc samples retain the continuously sampled vx/yaw pair.  Lateral
+    # velocity remains whatever the task distribution specifies (zero for
+    # ZGWSARM phase one).
 
 
 def sample_control_modes(mode, count, device):
@@ -731,18 +768,46 @@ class CommandLifecycleMixin:
             # Preserve the historical indexing behavior exactly.
             env_ids_in_category = env_ids
             task_rewards, success_thresholds = [], []
-            for key in [
-                "tracking_lin_vel",
-                "tracking_ang_vel",
-                "tracking_contacts_shaped_force",
-                "tracking_contacts_shaped_vel",
-            ]:
-                if key in self.command_sums.keys():
+            # The current compliance rewards call the yaw-rate term
+            # tracking_ang_vel_yaw, while legacy tasks and the shared threshold
+            # config use tracking_ang_vel.  Resolve that alias explicitly so a
+            # yaw curriculum cannot expand based only on linear tracking.
+            reward_threshold_candidates = (
+                (("tracking_lin_vel", "tracking_lin_vel"),),
+                (
+                    ("tracking_ang_vel_yaw", "tracking_ang_vel"),
+                    ("tracking_ang_vel", "tracking_ang_vel"),
+                ),
+                (
+                    (
+                        "tracking_contacts_shaped_force",
+                        "tracking_contacts_shaped_force",
+                    ),
+                ),
+                (
+                    (
+                        "tracking_contacts_shaped_vel",
+                        "tracking_contacts_shaped_vel",
+                    ),
+                ),
+            )
+            for candidates in reward_threshold_candidates:
+                match = next(
+                    (
+                        (reward_key, threshold_key)
+                        for reward_key, threshold_key in candidates
+                        if reward_key in self.command_sums
+                    ),
+                    None,
+                )
+                if match is not None:
+                    reward_key, threshold_key = match
                     task_rewards.append(
-                        self.command_sums[key][env_ids_in_category] / ep_len
+                        self.command_sums[reward_key][env_ids_in_category] / ep_len
                     )
                     success_thresholds.append(
-                        self.curriculum_thresholds[key] * self.reward_scales[key]
+                        self.curriculum_thresholds[threshold_key]
+                        * self.reward_scales[reward_key]
                     )
 
             old_bins = self.env_command_bins[
@@ -811,6 +876,12 @@ class CommandLifecycleMixin:
             self.commands[env_ids_in_category, :] = torch.Tensor(
                 new_commands[:, : self.cfg.commands.num_commands]
             ).to(self.device)
+
+        apply_planar_command_mixture(
+            self.commands,
+            env_ids,
+            getattr(self.cfg.commands, "planar_command_mixture", None),
+        )
 
         if self.cfg.commands.num_commands > 5:
             if self.cfg.commands.gaitwise_curricula:

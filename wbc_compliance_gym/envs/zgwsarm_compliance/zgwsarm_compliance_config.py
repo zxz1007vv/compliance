@@ -40,7 +40,9 @@ ZGWSARM_REWARD_SCALES = {
     "wheel_support_load": -1.0,
     # Soft footprint bounds and front/rear X alignment; no joint equality binding.
     "wheel_support_geometry": -2.0,
-    "wheel_lateral_slip": -0.5,
+    # Yaw A/B baseline: wheel_lateral_slip is intentionally absent. Fixed
+    # wheels require lateral scrub during skid steering; keep the rolling
+    # residual active while removing that unavoidable lateral-velocity cost.
     "wheel_rolling_consistency": -0.5,
 
     # 动作平滑与能耗
@@ -233,15 +235,20 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.resampling_time = 10
     cfg.commands.command_curriculum = True
     cfg.commands.distributional_commands = True
-    cfg.commands.num_lin_vel_bins = 30
-    cfg.commands.num_ang_vel_bins = 30
-
+    # Phase-one locomotion distribution.  The effective curriculum fields are
+    # num_bins_vel_{x,y,yaw}; they are intentionally one below, so active and
+    # limit ranges must match to prevent a single cell from sampling a wider
+    # limit range than the advertised command range.
     cfg.commands.lin_vel_x = [-0.5, 0.5]
-    cfg.commands.limit_vel_x = [-1.0, 1.0]
-    cfg.commands.lin_vel_y = [-0.5, 0.5]
-    cfg.commands.limit_vel_y = [-1.0, 1.0]
-    cfg.commands.ang_vel_yaw = [-0.5, 0.5]
-    cfg.commands.limit_vel_yaw = [-1.5, 1.5]
+    cfg.commands.limit_vel_x = [-0.5, 0.5]
+    cfg.commands.lin_vel_y = [0.0, 0.0]
+    cfg.commands.limit_vel_y = [0.0, 0.0]
+    cfg.commands.ang_vel_yaw = [-0.3, 0.3]
+    cfg.commands.limit_vel_yaw = [-0.3, 0.3]
+    # stand / pure vx / pure yaw / vx+yaw arc. Explicit pure-yaw samples are
+    # required because independent continuous vx/yaw sampling almost never
+    # produces vx == 0 exactly.
+    cfg.commands.planar_command_mixture = [0.2, 0.3, 0.4, 0.1]
     cfg.commands.heading_command = False
 
     cfg.commands.body_height_cmd = [0.0, 0.0]
@@ -573,6 +580,9 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_vel_y = [0.0, 0.0]
     cfg.commands.ang_vel_yaw = [0.0, 0.0]
     cfg.commands.limit_vel_yaw = [0.0, 0.0]
+    # Training-only mixture must not randomly zero explicit play/diagnostic
+    # commands supplied by the gamepad or CLI.
+    cfg.commands.planar_command_mixture = None
 
     # Task-owned play defaults. Edit this block to change normal play behavior.
     cfg.commands.hybrid_mode = "force"
@@ -582,12 +592,12 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_ee_sphe_pitch = [0.0, 0.0]
     cfg.commands.ee_sphe_yaw = [0.0, 0.0]
     cfg.commands.limit_ee_sphe_yaw = [0.0, 0.0]
-    cfg.commands.ee_force_x = [0.0, 0.0]
-    cfg.commands.limit_ee_force_x = [0.0, 0.0]
+    cfg.commands.ee_force_x = [10.0, 10.0]
+    cfg.commands.limit_ee_force_x = [10.0, 10.0]
     cfg.commands.ee_force_y = [0.0, 0.0]
     cfg.commands.limit_ee_force_y = [0.0, 0.0]
-    cfg.commands.ee_force_z = [10.0, 10.0]
-    cfg.commands.limit_ee_force_z = [10.0, 10.0]
+    cfg.commands.ee_force_z = [0.0, 0.0]
+    cfg.commands.limit_ee_force_z = [0.0, 0.0]
 
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.randomize_tile_roughness = False
@@ -646,6 +656,7 @@ def configure_zgwsarm_diagnostic_play(
         )
 
     cfg.diagnostics.zgwsarm_scenario = scenario
+    cfg.commands.planar_command_mixture = None
     cfg.terrain.mesh_type = "plane"
     cfg.terrain.teleport_robots = False
     cfg.terrain.yaw_init_range = 0.0

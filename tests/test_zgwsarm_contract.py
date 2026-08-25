@@ -12,7 +12,11 @@ import torch
 from wbc_compliance_gym.envs.base.compliance_task_config import (
     active_reward_scales,
 )
-from wbc_compliance_gym.commands.commands import CommandLifecycleMixin
+from wbc_compliance_gym.commands.commands import (
+    CommandLifecycleMixin,
+    apply_planar_command_mixture,
+)
+from wbc_compliance_gym.commands import build_command_curricula
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
     ZGWSARM_DIAGNOSTIC_SCENARIOS,
@@ -234,8 +238,16 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(-5.0, cfg.reward_scales.orientation)
         self.assertEqual(-5.0, cfg.reward_scales.base_height)
         self.assertEqual(0.0, cfg.reward_scales.dof_pos)
-        self.assertEqual([-1.0, 1.0], cfg.commands.lin_vel_x)
-        self.assertEqual([-1.5, 1.5], cfg.commands.ang_vel_yaw)
+        self.assertEqual([-0.5, 0.5], cfg.commands.lin_vel_x)
+        self.assertEqual(cfg.commands.lin_vel_x, cfg.commands.limit_vel_x)
+        self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_y)
+        self.assertEqual(cfg.commands.lin_vel_y, cfg.commands.limit_vel_y)
+        self.assertEqual([-0.3, 0.3], cfg.commands.ang_vel_yaw)
+        self.assertEqual(cfg.commands.ang_vel_yaw, cfg.commands.limit_vel_yaw)
+        self.assertEqual(1, cfg.commands.num_bins_vel_x)
+        self.assertEqual(1, cfg.commands.num_bins_vel_y)
+        self.assertEqual(1, cfg.commands.num_bins_vel_yaw)
+        self.assertEqual([0.2, 0.3, 0.4, 0.1], cfg.commands.planar_command_mixture)
         self.assertGreater(cfg.reward_scales.tracking_lin_vel, 0.0)
         self.assertGreater(cfg.reward_scales.tracking_ang_vel_yaw, 0.0)
         self.assertEqual(0.0, cfg.reward_scales.tracking_contacts_shaped_force)
@@ -244,7 +256,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertLess(cfg.reward_scales.wheel_contact_consistency, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_load, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_geometry, 0.0)
-        self.assertLess(cfg.reward_scales.wheel_lateral_slip, 0.0)
+        self.assertNotIn("wheel_lateral_slip", active_reward_scales(cfg))
         self.assertLess(cfg.reward_scales.wheel_rolling_consistency, 0.0)
         self.assertLess(cfg.reward_scales.stance_posture, 0.0)
         self.assertEqual(-0.5, cfg.reward_scales.stance_posture)
@@ -264,6 +276,33 @@ class ZGWSARMContractTests(unittest.TestCase):
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
         )
         self.assertEqual("binary", cfg.commands.hybrid_mode)
+
+    def test_phase_one_velocity_samples_stay_inside_advertised_ranges(self):
+        cfg = ZGWSARMComplianceCfg()
+        _, curricula = build_command_curricula(cfg.commands)
+
+        samples, _ = curricula[0].sample(batch_size=4096)
+        expected_ranges = (
+            cfg.commands.lin_vel_x,
+            cfg.commands.lin_vel_y,
+            cfg.commands.ang_vel_yaw,
+        )
+        for command_index, value_range in enumerate(expected_ranges):
+            self.assertTrue(np.all(samples[:, command_index] >= value_range[0]))
+            self.assertTrue(np.all(samples[:, command_index] <= value_range[1]))
+
+    def test_planar_command_mixture_creates_pure_training_slices(self):
+        commands = torch.ones((4, 23))
+        env_ids = torch.arange(4)
+        with patch("torch.rand", return_value=torch.tensor([0.1, 0.3, 0.7, 0.95])):
+            apply_planar_command_mixture(
+                commands, env_ids, probabilities=[0.2, 0.3, 0.4, 0.1]
+            )
+
+        self.assertTrue(torch.equal(commands[0, :3], torch.zeros(3)))
+        self.assertTrue(torch.equal(commands[1, :3], torch.tensor([1.0, 0.0, 0.0])))
+        self.assertTrue(torch.equal(commands[2, :3], torch.tensor([0.0, 0.0, 1.0])))
+        self.assertTrue(torch.equal(commands[3, :3], torch.ones(3)))
 
     def test_config_does_not_build_from_the_b1_z1_task(self):
         with patch(
@@ -326,15 +365,15 @@ class ZGWSARMContractTests(unittest.TestCase):
         configure_zgwsarm_compliance_play(cfg)
 
         self.assertEqual("force", cfg.commands.hybrid_mode)
+        self.assertIsNone(cfg.commands.planar_command_mixture)
 
-    def test_play_without_force_override_uses_task_owned_xyz_ranges(self):
+    def test_play_without_force_override_uses_task_owned_xyz_target(self):
         cfg = ZGWSARMComplianceCfg()
         configure_zgwsarm_compliance_play(cfg, control_mode="force")
 
-        for axis in "xyz":
-            self.assertEqual(
-                [-20.0, 20.0], getattr(cfg.commands, f"ee_force_{axis}")
-            )
+        self.assertEqual([10.0, 10.0], cfg.commands.ee_force_x)
+        self.assertEqual([0.0, 0.0], cfg.commands.ee_force_y)
+        self.assertEqual([0.0, 0.0], cfg.commands.ee_force_z)
         self.assertEqual(
             list(ZGWSARM_FORCE_COMPONENT_RANGE),
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
@@ -545,8 +584,8 @@ class ZGWSARMContractTests(unittest.TestCase):
         cfg = ZGWSARMComplianceCfgPPO()
 
         self.assertEqual(48, cfg.runner.num_steps_per_env)
-        self.assertEqual(5000, cfg.runner.max_iterations)
-        self.assertEqual(400, cfg.runner.save_interval)
+        self.assertEqual(10000, cfg.runner.max_iterations)
+        self.assertEqual(500, cfg.runner.save_interval)
         self.assertEqual(0, cfg.runner.save_video_interval)
         self.assertEqual(1, cfg.runner.log_freq)
         self.assertEqual(1.0e-3, cfg.algorithm.learning_rate)

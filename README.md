@@ -455,6 +455,14 @@ ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz �
 `torque = 15 * action - 0.2 * wheel_velocity` 并按 URDF 裁剪到 `±28 N·m`。
 轮角不进入策略关节位置观测，真实轮速仍保留。
 
+首阶段 locomotion 训练使用 `vx in [-0.5, 0.5] m/s`、`vy = 0`、
+`yaw_rate in [-0.3, 0.3] rad/s`。这三个 active range 与单-bin curriculum 的 limit
+range 保持一致，避免从训练一开始采到更大的隐藏命令。为隔离固定轮 skid-steer
+转向与轮子横向擦滑惩罚之间的冲突，首阶段关闭 `wheel_lateral_slip`，但继续保留
+`wheel_rolling_consistency`。平面命令按 20% 静止、30% 纯前进、40% 纯 yaw、10%
+前进加转弯弧线显式混合，避免纯 yaw 在连续采样中几乎不出现。后续扩大 yaw 范围
+或恢复侧滑惩罚应作为独立 A/B 变量。
+
 ZGWSARM 原地 Position/Force/Binary 测试：
 
 ```bash

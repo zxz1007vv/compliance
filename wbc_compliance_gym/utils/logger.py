@@ -104,7 +104,7 @@ class Logger:
             for mode_id, mode_name in enumerate(LOCOMOTION_MODE_NAMES):
                 episode[f"command_mode/{mode_name}_count"] = torch.sum(
                     self.env.locomotion_mode_ids == mode_id
-                )
+                ).float()
             for axis, stats, expanded in zip(
                 ("vx", "vy", "yaw"),
                 velocity_curriculum.statistics,

@@ -160,6 +160,34 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
             self._wheel_kinematics_cache = wheel_kinematics
         return wheel_kinematics
 
+    def get_wheel_command_kinematics(self):
+        """Estimate chassis vx/yaw from measured wheel rolling speeds."""
+        wheel_state = self.get_wheel_kinematics()
+        y = wheel_state["positions_base"][:, :, 1]
+        rolling_speed = wheel_state["rolling_speeds"]
+        y_mean = y.mean(dim=1, keepdim=True)
+        speed_mean = rolling_speed.mean(dim=1, keepdim=True)
+        dy = y - y_mean
+        yaw_hat = -torch.sum(dy * (rolling_speed - speed_mean), dim=1) / (
+            torch.sum(torch.square(dy), dim=1) + 1e-6
+        )
+        vx_hat = speed_mean[:, 0] + yaw_hat * y_mean[:, 0]
+
+        left = y > y_mean
+        right = y < y_mean
+        left_speed = torch.sum(rolling_speed * left, dim=1) / left.sum(
+            dim=1
+        ).clamp(min=1)
+        right_speed = torch.sum(rolling_speed * right, dim=1) / right.sum(
+            dim=1
+        ).clamp(min=1)
+        return {
+            "vx_hat": vx_hat,
+            "yaw_hat": yaw_hat,
+            "mean_left_wheel_speed": left_speed,
+            "mean_right_wheel_speed": right_speed,
+        }
+
     def get_zgwsarm_diagnostic_tensors(self):
         """Return per-environment locomotion metrics without changing state."""
         metrics = {}
@@ -246,6 +274,22 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
         base_speed_residual = (
             rolling_speeds - self.base_lin_vel[:, 0:1]
         ).abs()
+        wheel_command = self.get_wheel_command_kinematics()
+        metrics["wheel_command/vx_hat_mps"] = wheel_command["vx_hat"]
+        metrics["wheel_command/yaw_hat_radps"] = wheel_command["yaw_hat"]
+        if hasattr(self, "commands"):
+            metrics["wheel_command/vx_abs_error_mps"] = torch.abs(
+                wheel_command["vx_hat"] - self.commands[:, 0]
+            )
+            metrics["wheel_command/yaw_abs_error_radps"] = torch.abs(
+                wheel_command["yaw_hat"] - self.commands[:, 2]
+            )
+        metrics["wheel_command/left_mean_speed_mps"] = wheel_command[
+            "mean_left_wheel_speed"
+        ]
+        metrics["wheel_command/right_mean_speed_mps"] = wheel_command[
+            "mean_right_wheel_speed"
+        ]
 
         for wheel_index, dof_name in enumerate(self.cfg.asset.wheel_dof_names):
             wheel_name = dof_name[: -len("_FOOT_JOINT")]

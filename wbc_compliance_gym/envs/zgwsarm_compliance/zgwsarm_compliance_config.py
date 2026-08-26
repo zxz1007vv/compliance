@@ -40,10 +40,11 @@ ZGWSARM_REWARD_SCALES = {
     "wheel_support_load": -1.0,
     # Soft footprint bounds and front/rear X alignment; no joint equality binding.
     "wheel_support_geometry": -2.0,
-    # Yaw A/B baseline: wheel_lateral_slip is intentionally absent. Fixed
-    # wheels require lateral scrub during skid steering; keep the rolling
-    # residual active while removing that unavoidable lateral-velocity cost.
+    # wheel_lateral_slip is currently disabled. To enable its mode-dependent
+    # penalty, add it here with a negative non-zero weight (for example -0.5).
     "wheel_rolling_consistency": -0.5,
+    "wheel_v_tracking": 0.5,
+    "wheel_yaw_tracking": 0.5,
 
     # 动作平滑与能耗
     "action_magnitude": -0.05,
@@ -84,6 +85,326 @@ ZGWSARM_EE_YAW_RANGE = (-1.20, 1.20)
 #机械臂力指令范围。
 # The largest possible resultant is therefore sqrt(3) * 30 ~= 52 N.
 ZGWSARM_FORCE_COMPONENT_RANGE = (-30.0, 30.0)
+
+
+# =============================================================================
+# Environment
+# =============================================================================
+
+
+def _configure_zgwsarm_environment(cfg):
+    cfg.env.num_envs = 4096
+    cfg.env.num_observation_history = 10
+    cfg.env.num_privileged_obs = 16
+    cfg.env.observe_vel = False
+    cfg.env.priv_passthrough = False
+    cfg.env.recording_width_px = 180
+    cfg.env.recording_height_px = 120
+
+    # Read-only rollout diagnostics. These values do not participate in the
+    # observation, reward, control, or termination paths.
+    cfg.diagnostics = ConfigNode(
+        zgwsarm_scenario=None,
+        hard_limit_margin=0.05,
+    )
+
+
+# =============================================================================
+# Terrain
+# =============================================================================
+
+
+def _configure_zgwsarm_terrain(cfg):
+    # 整张地形网格外围的额外边界宽度，单位 m；
+    cfg.terrain.border_size = 0.0
+    # 地形实现类型：使用由方块地形拼接并转换得到的三角网格。
+    cfg.terrain.mesh_type = "boxes_tm"
+    # 地形网格的列数；启用地形课程时通常用于区分不同地形类型。
+    cfg.terrain.num_cols = 20
+    # 地形网格的行数；启用地形课程时通常用于表示不同难度等级。
+    cfg.terrain.num_rows = 20
+    # 每个地形单元沿横向的尺寸，单位 m。
+    cfg.terrain.terrain_width = 5.0
+    # 每个地形单元沿纵向的尺寸，单位 m。
+    cfg.terrain.terrain_length = 5.0
+    # 机器人复位时相对地形单元中心的 X 方向随机初始偏移范围，单位 m。
+    cfg.terrain.x_init_range = 1.0
+    # 机器人复位时相对地形单元中心的 Y 方向随机初始偏移范围，单位 m。
+    cfg.terrain.y_init_range = 1.0
+    # 机器人复位时初始偏航角的对称随机范围，约为 [-3.14, 3.14] rad。
+    cfg.terrain.yaw_init_range = 3.14
+    # 启用越界传送时，机器人距地形单元边缘小于该距离便触发传送，单位 m。
+    cfg.terrain.teleport_thresh = 0.3
+    # 是否在机器人越过地形单元边界时将其传送至另一侧；False 表示禁用。
+    cfg.terrain.teleport_robots = False
+    # 是否只从整张地形网格的中央区域为机器人选择出生单元。
+    cfg.terrain.center_robots = True
+    # 中央出生区域相对网格中心的半跨度；4 对应中心附近 8 行 x 8 列。
+    cfg.terrain.center_span = 4
+    # 高度场相邻采样点之间的水平距离，单位 m；越小则网格越精细。
+    cfg.terrain.horizontal_scale = 0.10
+    # 是否按照训练表现逐步提升地形难度；False 表示不使用地形课程。
+    cfg.terrain.curriculum = False
+    # 基础地形生成阶段的高度噪声幅值，单位 m；0 表示该项不添加噪声。
+    # 注意：domain_rand.randomize_tile_roughness 仍可另外叠加单块地形粗糙度。
+    cfg.terrain.terrain_noise_magnitude = 0.0
+    # 各候选地形分支的采样权重。对 boxes_tm 当前实现而言，该设置不会选中
+    # 下楼梯、上楼梯、坡面或坑等结构，因此生成基础平地（仍可叠加单块粗糙度）。
+    cfg.terrain.terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0]
+
+
+# =============================================================================
+# Observations
+# =============================================================================
+
+
+def _configure_zgwsarm_observations(cfg):
+    cfg.sensors.sensor_names = [
+        "OrientationSensor",
+        "RCSensor",
+        "JointPositionSensor",
+        "JointVelocitySensor",
+        "ActionSensor",
+        "ClockSensor",
+    ]
+    cfg.sensors.sensor_args = {name: {} for name in cfg.sensors.sensor_names}
+    cfg.sensors.privileged_sensor_names = [
+        "BodyVelocitySensor",
+        "JointDynamicsSensor",
+        "EeGripperForceSensor",
+        "FrictionSensor",
+        "EeGripperPositionSensor",
+        "EeGripperTargetPositionSensor",
+    ]
+    cfg.sensors.privileged_sensor_args = {
+        name: {} for name in cfg.sensors.privileged_sensor_names
+    }
+
+    cfg.obs_scales.ee_sphe_radius_cmd = 0.5
+    cfg.obs_scales.ee_sphe_pitch_cmd = 1.0
+    cfg.obs_scales.ee_sphe_yaw_cmd = 1.3
+    cfg.obs_scales.ee_timing_cmd = 0.1
+    cfg.obs_scales.ee_force_x = 0.01
+    cfg.obs_scales.ee_force_y = 0.01
+    cfg.obs_scales.ee_force_z = 0.01
+
+
+# =============================================================================
+# Commands
+# =============================================================================
+
+
+def _configure_zgwsarm_commands(cfg):
+    cfg.commands.num_commands = 23
+    cfg.commands.resampling_time = 10
+    cfg.commands.command_curriculum = False   #开启课程
+    cfg.commands.distributional_commands = True
+    cfg.commands.velocity_sampling = "continuous_modes"
+    cfg.commands.lin_vel_x = [-0.5, 0.5]
+    cfg.commands.limit_vel_x = [-1.0, 1.0]
+    cfg.commands.lin_vel_y = [0.0, 0.0]
+    cfg.commands.limit_vel_y = [0.0, 0.0]
+    cfg.commands.ang_vel_yaw = [-0.5, 0.5]
+    cfg.commands.limit_vel_yaw = [-1.5, 1.5]
+    cfg.commands.vx_curriculum_step = 0.1
+    cfg.commands.vy_curriculum_step = 0.1
+    cfg.commands.yaw_curriculum_step = 0.1
+    cfg.commands.vx_success_threshold = 0.15
+    cfg.commands.vy_success_threshold = 0.15
+    cfg.commands.yaw_success_threshold = 0.15
+    cfg.commands.velocity_curriculum_min_samples = 50000
+    cfg.commands.velocity_curriculum_required_successes = 2
+    cfg.commands.velocity_curriculum_ema_alpha = 0.5
+    cfg.commands.velocity_curriculum_active_threshold = 0.05
+    cfg.commands.planar_command_mixture = {
+        "stand": 0.2,
+        "pure_x": 0.3,
+        "pure_y": 0.0,
+        "pure_yaw": 0.4,
+        "xy": 0.0,
+        "x_yaw": 0.1,
+        "y_yaw": 0.0,
+        "full": 0.0,
+    }
+    cfg.commands.heading_command = False
+
+    cfg.commands.body_height_cmd = [0.0, 0.0]
+    cfg.commands.limit_body_height = [0.0, 0.0]
+    cfg.commands.command_base_height = 0.54
+    cfg.commands.body_pitch_range = [0.0, 0.0]
+    cfg.commands.limit_body_pitch = [0.0, 0.0]
+    cfg.commands.body_roll_range = [0.0, 0.0]
+    cfg.commands.limit_body_roll = [0.0, 0.0]
+
+    # Retain the legacy 23-dimensional command contract in phase one.  These
+    # fixed B1 gait slots are interface compatibility fields only; no active
+    # ZGWSARM reward consumes their contact schedule.
+    cfg.commands.gait_frequency_cmd_range = [2.2, 2.2]
+    cfg.commands.limit_gait_frequency = [2.2, 2.2]
+    cfg.commands.gait_phase_cmd_range = [0.5, 0.5]
+    cfg.commands.limit_gait_phase = [0.5, 0.5]
+    cfg.commands.gait_offset_cmd_range = [0.0, 0.0]
+    cfg.commands.limit_gait_offset = [0.0, 0.0]
+    cfg.commands.gait_bound_cmd_range = [0.0, 0.0]
+    cfg.commands.limit_gait_bound = [0.0, 0.0]
+    cfg.commands.gait_duration_cmd_range = [0.5, 0.5]
+    cfg.commands.limit_gait_duration = [0.5, 0.5]
+    cfg.commands.footswing_height_range = [0.2, 0.2]
+    cfg.commands.limit_footswing_height = [0.2, 0.2]
+    cfg.commands.stance_width_range = [0.6, 0.6]
+    cfg.commands.limit_stance_width = [0.6, 0.6]
+    cfg.commands.stance_length_range = [0.65, 0.65]
+    cfg.commands.limit_stance_length = [0.65, 0.65]
+    cfg.commands.aux_reward_coef_range = [0.0, 0.0]
+    cfg.commands.limit_aux_reward_coef = [0.0, 0.0]
+
+    for name in (
+        "body_height",
+        "gait_frequency",
+        "gait_phase",
+        "gait_offset",
+        "gait_bound",
+        "gait_duration",
+        "footswing_height",
+        "body_roll",
+        "body_pitch",
+        "stance_width",
+        "stance_length",
+        "aux_reward_coef",
+    ):
+        setattr(cfg.commands, f"num_bins_{name}", 1)
+    # Velocity dimensions no longer enter the legacy Cartesian grid.
+    for name in ("num_bins_vel_x", "num_bins_vel_y", "num_bins_vel_yaw"):
+        if hasattr(cfg.commands, name):
+            delattr(cfg.commands, name)
+    cfg.commands.exclusive_phase_offset = False
+    cfg.commands.pacing_offset = False
+    cfg.commands.binary_phases = False
+    cfg.commands.gaitwise_curricula = False
+    cfg.commands.balance_gait_distribution = False
+
+    cfg.commands.hybrid_mode = "binary"
+    cfg.commands.force_control = False
+    cfg.commands.control_only_z1 = False
+    cfg.commands.interpolate_ee_cmds = True
+    cfg.commands.sample_feasible_commands = False
+    cfg.commands.teleop_occulus = False
+    # This legacy switch selects the shared 23-D compliance command generator;
+    # it does not make ZGWSARM inherit the B1 robot or reward configuration.
+    cfg.commands.inverse_IK_door_opening = True
+
+    # Cartesian force targets are sampled independently in the base-yaw frame.
+    # Equal training ranges remain concise while play can isolate any axis.
+    cfg.commands.ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.limit_ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
+    cfg.commands.ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
+    cfg.commands.limit_ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
+    cfg.commands.ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+    cfg.commands.limit_ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
+    cfg.commands.ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    cfg.commands.limit_ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    # All corners of the configured spherical box remain above this height at
+    # the nominal 0.54 m base height; the shared B1+Z1 default remains 0.05 m.
+    cfg.commands.ee_min_world_height = 0.15
+    cfg.commands.ee_timing = [1.0, 4.0]
+    cfg.commands.limit_ee_timing = [1.0, 4.0]
+    cfg.commands.settle_time = 2.0
+    cfg.commands.end_effector_roll = [0.0, 0.0]
+    cfg.commands.limit_end_effector_roll = [0.0, 0.0]
+    cfg.commands.end_effector_pitch = [0.0, 0.0]
+    cfg.commands.limit_end_effector_pitch = [0.0, 0.0]
+    cfg.commands.end_effector_yaw = [0.0, 0.0]
+    cfg.commands.limit_end_effector_yaw = [0.0, 0.0]
+
+
+# =============================================================================
+# Domain randomization
+# =============================================================================
+
+
+def _configure_zgwsarm_domain_randomization(cfg):
+    cfg.domain_rand.rand_interval_s = 4
+    cfg.domain_rand.lag_timesteps = 4
+    cfg.domain_rand.randomize_lag_timesteps = True
+    cfg.domain_rand.randomize_rigids_after_start = False
+
+    cfg.domain_rand.randomize_friction = True
+    cfg.domain_rand.randomize_friction_indep = False
+    cfg.domain_rand.friction_range = [0.6, 1.5]
+    cfg.domain_rand.randomize_restitution = False
+    cfg.domain_rand.restitution = 0.5
+    cfg.domain_rand.restitution_range = [0.0, 0.4]
+    cfg.domain_rand.randomize_ground_friction = True
+    cfg.domain_rand.ground_friction_range = [0.6, 1.2]
+    cfg.domain_rand.randomize_ground_restitution = False
+
+    cfg.domain_rand.randomize_base_mass = False
+    cfg.domain_rand.added_mass_range = [-1.0, 3.0]
+    cfg.domain_rand.randomize_com_displacement = True
+    cfg.domain_rand.com_displacement_range = [-0.05, 0.05]
+    cfg.domain_rand.randomize_gravity = True
+    cfg.domain_rand.gravity_range = [-0.5, 0.5]
+    cfg.domain_rand.gravity_rand_interval_s = 8.0
+    cfg.domain_rand.gravity_impulse_duration = 0.99
+
+    cfg.domain_rand.randomize_motor_strength = True
+    cfg.domain_rand.motor_strength_range = [0.9, 1.1]
+    cfg.domain_rand.randomize_motor_offset = False
+    cfg.domain_rand.motor_offset_range = [-0.02, 0.02]
+    cfg.domain_rand.randomize_Kp_factor = False
+    cfg.domain_rand.randomize_Kd_factor = True
+
+    cfg.domain_rand.randomize_tile_roughness = True
+    cfg.domain_rand.tile_roughness_range = [0.0, 0.08]
+    cfg.domain_rand.push_robots = True
+    cfg.domain_rand.max_push_vel_xy = 0.8
+
+    cfg.domain_rand.randomize_gripper_force_gains = True
+    cfg.domain_rand.gripper_force_kp_range = [25.0, 400.0]
+    cfg.domain_rand.gripper_force_kd_range = [3.0, 10.0]
+    # 每次进入新的末端受力片段时，启用虚拟力场的概率；0.8 即约 80% 的
+    # 片段由锚点弹簧施力，其余约 20% 为 freed（无锚点约束）片段。
+    cfg.domain_rand.gripper_forced_prob = 0.8
+    # 可采样的力场锚点模式：两种模式都使用机器人相对坐标系；static 模式下
+    # 锚点局部位置不动，moving 模式下锚点局部位置会随时间分段移动。
+    cfg.domain_rand.force_anchor_modes = [
+        "robot_relative_static",
+        "robot_relative_moving",
+    ]
+    # 上述锚点模式的采样概率，顺序一一对应：80% 静态、20% 移动。
+    cfg.domain_rand.force_anchor_mode_probs = [0.8, 0.2]
+    # moving 模式下锚点速度模长的随机范围，单位 m/s；三维运动方向另行随机。
+    cfg.domain_rand.force_anchor_velocity_range = [0.0, 0.02]
+    # moving 模式下每段恒定运动持续时间的随机范围，单位 s；到时重新采样运动段。
+    cfg.domain_rand.force_anchor_motion_duration_s = [1.0, 3.0]
+    # moving 锚点相对最初锁定局部点的 XYZ 最大绝对偏移，单位 m。
+    cfg.domain_rand.force_anchor_offset_limit = [0.05, 0.05, 0.03]
+
+    cfg.domain_rand.prop_kd = 0.1
+    cfg.domain_rand.max_push_force_xyz_gripper = list(
+        ZGWSARM_FORCE_COMPONENT_RANGE
+    )
+    cfg.domain_rand.max_push_force_xyz_gripper_freed = list(
+        ZGWSARM_FORCE_COMPONENT_RANGE
+    )
+    cfg.domain_rand.push_gripper_stators = False
+    cfg.domain_rand.push_gripper_interval_s = [3.5, 9.0]
+    cfg.domain_rand.push_gripper_duration_s = [1.0, 3.0]
+    cfg.domain_rand.max_push_vel_xyz_gripper = [-40.0, 40.0]
+
+    cfg.domain_rand.push_robot_base = False
+    cfg.domain_rand.push_robot_interval_s = 5.0
+    cfg.domain_rand.push_robot_duration_s = [1.0, 2.0]
+    cfg.domain_rand.max_push_vel_xyz_robot = [-40.0, 40.0]
+
+
+# =============================================================================
+# Rewards and termination
+# =============================================================================
 
 
 def _configure_zgwsarm_rewards(cfg):
@@ -149,25 +470,47 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.stance_symmetry_scale = 0.10
     cfg.rewards.wheel_lateral_slip_scale = 0.25
     cfg.rewards.wheel_rolling_error_scale = 0.25
+    cfg.rewards.wheel_v_tracking_scale = 0.40
+    cfg.rewards.wheel_yaw_tracking_scale = 0.50
+    cfg.rewards.wheel_command_active_threshold = 0.05
+    cfg.rewards.wheel_lateral_slip_mode_weights = {
+        "stand": 1.0,
+        "pure_x": 1.0,
+        "pure_y": 0.0,
+        "pure_yaw": 0.2,
+        "xy": 0.0,
+        "x_yaw": 0.2,
+        "y_yaw": 0.0,
+        "full": 0.0,
+    }
 
     apply_reward_scales(cfg, ZGWSARM_REWARD_SCALES)
 
 
-def _configure_zgwsarm_environment(cfg):
-    cfg.env.num_envs = 4000
-    cfg.env.num_observation_history = 10
-    cfg.env.num_privileged_obs = 16
-    cfg.env.observe_vel = False
-    cfg.env.priv_passthrough = False
-    cfg.env.recording_width_px = 180
-    cfg.env.recording_height_px = 120
+# =============================================================================
+# Normalization
+# =============================================================================
 
-    # Read-only rollout diagnostics. These values do not participate in the
-    # observation, reward, control, or termination paths.
-    cfg.diagnostics = ConfigNode(
-        zgwsarm_scenario=None,
-        hard_limit_margin=0.05,
-    )
+
+def _configure_zgwsarm_normalization(cfg):
+    cfg.normalization.clip_actions = 4.0
+    cfg.normalization.friction_range = [0, 1]
+    cfg.normalization.ground_friction_range = [0, 1]
+
+
+# =============================================================================
+# Simulation
+# =============================================================================
+
+
+def _configure_zgwsarm_simulation(cfg):
+    cfg.sim.physx.max_gpu_contact_pairs = 2 ** 23
+    cfg.sim.physx.default_buffer_size_multiplier = 3
+
+
+# =============================================================================
+# PPO training and run identity
+# =============================================================================
 
 
 def _configure_zgwsarm_training(cfg):
@@ -187,7 +530,7 @@ def _configure_zgwsarm_training(cfg):
     cfg.algorithm.num_mini_batches = 4
 
     # Run identity. ``--run-name`` overrides training_name for one launch.
-    cfg.run.training_name = "wbc_release"
+    cfg.run.training_name = "826v1_lateral_slip_off"
     cfg.run.experiment_group = "wbc"
     cfg.run.experiment_job_type = "release"
 
@@ -199,245 +542,9 @@ def _configure_zgwsarm_training(cfg):
     return cfg
 
 
-def _configure_zgwsarm_observations(cfg):
-    cfg.sensors.sensor_names = [
-        "OrientationSensor",
-        "RCSensor",
-        "JointPositionSensor",
-        "JointVelocitySensor",
-        "ActionSensor",
-        "ClockSensor",
-    ]
-    cfg.sensors.sensor_args = {name: {} for name in cfg.sensors.sensor_names}
-    cfg.sensors.privileged_sensor_names = [
-        "BodyVelocitySensor",
-        "JointDynamicsSensor",
-        "EeGripperForceSensor",
-        "FrictionSensor",
-        "EeGripperPositionSensor",
-        "EeGripperTargetPositionSensor",
-    ]
-    cfg.sensors.privileged_sensor_args = {
-        name: {} for name in cfg.sensors.privileged_sensor_names
-    }
-
-    cfg.obs_scales.ee_sphe_radius_cmd = 0.5
-    cfg.obs_scales.ee_sphe_pitch_cmd = 1.0
-    cfg.obs_scales.ee_sphe_yaw_cmd = 1.3
-    cfg.obs_scales.ee_timing_cmd = 0.1
-    cfg.obs_scales.ee_force_x = 0.01
-    cfg.obs_scales.ee_force_y = 0.01
-    cfg.obs_scales.ee_force_z = 0.01
-
-
-def _configure_zgwsarm_commands(cfg):
-    cfg.commands.num_commands = 23
-    cfg.commands.resampling_time = 10
-    cfg.commands.command_curriculum = True
-    cfg.commands.distributional_commands = True
-    # Phase-one locomotion distribution.  The effective curriculum fields are
-    # num_bins_vel_{x,y,yaw}; they are intentionally one below, so active and
-    # limit ranges must match to prevent a single cell from sampling a wider
-    # limit range than the advertised command range.
-    cfg.commands.lin_vel_x = [-0.5, 0.5]
-    cfg.commands.limit_vel_x = [-0.5, 0.5]
-    cfg.commands.lin_vel_y = [0.0, 0.0]
-    cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [-0.3, 0.3]
-    cfg.commands.limit_vel_yaw = [-0.3, 0.3]
-    # stand / pure vx / pure yaw / vx+yaw arc. Explicit pure-yaw samples are
-    # required because independent continuous vx/yaw sampling almost never
-    # produces vx == 0 exactly.
-    cfg.commands.planar_command_mixture = [0.2, 0.3, 0.4, 0.1]
-    cfg.commands.heading_command = False
-
-    cfg.commands.body_height_cmd = [0.0, 0.0]
-    cfg.commands.limit_body_height = [0.0, 0.0]
-    cfg.commands.command_base_height = 0.54
-    cfg.commands.body_pitch_range = [0.0, 0.0]
-    cfg.commands.limit_body_pitch = [0.0, 0.0]
-    cfg.commands.body_roll_range = [0.0, 0.0]
-    cfg.commands.limit_body_roll = [0.0, 0.0]
-
-    # Retain the legacy 23-dimensional command contract in phase one.  These
-    # fixed B1 gait slots are interface compatibility fields only; no active
-    # ZGWSARM reward consumes their contact schedule.
-    cfg.commands.gait_frequency_cmd_range = [2.2, 2.2]
-    cfg.commands.limit_gait_frequency = [2.2, 2.2]
-    cfg.commands.gait_phase_cmd_range = [0.5, 0.5]
-    cfg.commands.limit_gait_phase = [0.5, 0.5]
-    cfg.commands.gait_offset_cmd_range = [0.0, 0.0]
-    cfg.commands.limit_gait_offset = [0.0, 0.0]
-    cfg.commands.gait_bound_cmd_range = [0.0, 0.0]
-    cfg.commands.limit_gait_bound = [0.0, 0.0]
-    cfg.commands.gait_duration_cmd_range = [0.5, 0.5]
-    cfg.commands.limit_gait_duration = [0.5, 0.5]
-    cfg.commands.footswing_height_range = [0.2, 0.2]
-    cfg.commands.limit_footswing_height = [0.2, 0.2]
-    cfg.commands.stance_width_range = [0.6, 0.6]
-    cfg.commands.limit_stance_width = [0.6, 0.6]
-    cfg.commands.stance_length_range = [0.65, 0.65]
-    cfg.commands.limit_stance_length = [0.65, 0.65]
-    cfg.commands.aux_reward_coef_range = [0.0, 0.0]
-    cfg.commands.limit_aux_reward_coef = [0.0, 0.0]
-
-    for name in (
-        "vel_x",
-        "vel_y",
-        "vel_yaw",
-        "body_height",
-        "gait_frequency",
-        "gait_phase",
-        "gait_offset",
-        "gait_bound",
-        "gait_duration",
-        "footswing_height",
-        "body_roll",
-        "body_pitch",
-        "stance_width",
-        "stance_length",
-        "aux_reward_coef",
-    ):
-        setattr(cfg.commands, f"num_bins_{name}", 1)
-    cfg.commands.exclusive_phase_offset = False
-    cfg.commands.pacing_offset = False
-    cfg.commands.binary_phases = False
-    cfg.commands.gaitwise_curricula = False
-    cfg.commands.balance_gait_distribution = False
-
-    cfg.commands.hybrid_mode = "binary"
-    cfg.commands.force_control = False
-    cfg.commands.control_only_z1 = False
-    cfg.commands.interpolate_ee_cmds = True
-    cfg.commands.sample_feasible_commands = False
-    cfg.commands.teleop_occulus = False
-    # This legacy switch selects the shared 23-D compliance command generator;
-    # it does not make ZGWSARM inherit the B1 robot or reward configuration.
-    cfg.commands.inverse_IK_door_opening = True
-
-    # Cartesian force targets are sampled independently in the base-yaw frame.
-    # Equal training ranges remain concise while play can isolate any axis.
-    cfg.commands.ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.limit_ee_force_x = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.limit_ee_force_y = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.limit_ee_force_z = list(ZGWSARM_FORCE_COMPONENT_RANGE)
-    cfg.commands.ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
-    cfg.commands.limit_ee_sphe_radius = list(ZGWSARM_EE_RADIUS_RANGE)
-    cfg.commands.ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
-    cfg.commands.limit_ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
-    cfg.commands.ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
-    cfg.commands.limit_ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
-    # All corners of the configured spherical box remain above this height at
-    # the nominal 0.54 m base height; the shared B1+Z1 default remains 0.05 m.
-    cfg.commands.ee_min_world_height = 0.15
-    cfg.commands.ee_timing = [1.0, 4.0]
-    cfg.commands.limit_ee_timing = [1.0, 4.0]
-    cfg.commands.settle_time = 2.0
-    cfg.commands.end_effector_roll = [0.0, 0.0]
-    cfg.commands.limit_end_effector_roll = [0.0, 0.0]
-    cfg.commands.end_effector_pitch = [0.0, 0.0]
-    cfg.commands.limit_end_effector_pitch = [0.0, 0.0]
-    cfg.commands.end_effector_yaw = [0.0, 0.0]
-    cfg.commands.limit_end_effector_yaw = [0.0, 0.0]
-
-
-def _configure_zgwsarm_domain_randomization(cfg):
-    cfg.domain_rand.rand_interval_s = 4
-    cfg.domain_rand.lag_timesteps = 4
-    cfg.domain_rand.randomize_lag_timesteps = True
-    cfg.domain_rand.randomize_rigids_after_start = False
-
-    cfg.domain_rand.randomize_friction = True
-    cfg.domain_rand.randomize_friction_indep = False
-    cfg.domain_rand.friction_range = [0.6, 1.5]
-    cfg.domain_rand.randomize_restitution = False
-    cfg.domain_rand.restitution = 0.5
-    cfg.domain_rand.restitution_range = [0.0, 0.4]
-    cfg.domain_rand.randomize_ground_friction = True
-    cfg.domain_rand.ground_friction_range = [0.6, 1.2]
-    cfg.domain_rand.randomize_ground_restitution = False
-
-    cfg.domain_rand.randomize_base_mass = False
-    cfg.domain_rand.added_mass_range = [-1.0, 3.0]
-    cfg.domain_rand.randomize_com_displacement = True
-    cfg.domain_rand.com_displacement_range = [-0.05, 0.05]
-    cfg.domain_rand.randomize_gravity = True
-    cfg.domain_rand.gravity_range = [-0.5, 0.5]
-    cfg.domain_rand.gravity_rand_interval_s = 8.0
-    cfg.domain_rand.gravity_impulse_duration = 0.99
-
-    cfg.domain_rand.randomize_motor_strength = True
-    cfg.domain_rand.motor_strength_range = [0.9, 1.1]
-    cfg.domain_rand.randomize_motor_offset = False
-    cfg.domain_rand.motor_offset_range = [-0.02, 0.02]
-    cfg.domain_rand.randomize_Kp_factor = False
-    cfg.domain_rand.randomize_Kd_factor = True
-
-    cfg.domain_rand.randomize_tile_roughness = True
-    cfg.domain_rand.tile_roughness_range = [0.0, 0.08]
-    cfg.domain_rand.push_robots = True
-    cfg.domain_rand.max_push_vel_xy = 0.8
-
-    cfg.domain_rand.randomize_gripper_force_gains = True
-    cfg.domain_rand.gripper_forced_prob = 0.8
-    cfg.domain_rand.force_anchor_modes = [
-        "robot_relative_static",
-        "robot_relative_moving",
-    ]
-    cfg.domain_rand.force_anchor_mode_probs = [0.8, 0.2]
-    # Moving-anchor speed magnitude, segment duration and maximum XYZ offset
-    # from the initially latched local point.
-    cfg.domain_rand.force_anchor_velocity_range = [0.0, 0.02]
-    cfg.domain_rand.force_anchor_motion_duration_s = [1.0, 3.0]
-    cfg.domain_rand.force_anchor_offset_limit = [0.05, 0.05, 0.03]
-    cfg.domain_rand.gripper_force_kp_range = [25.0, 400.0]
-    cfg.domain_rand.gripper_force_kd_range = [3.0, 10.0]
-    cfg.domain_rand.prop_kd = 0.1
-    cfg.domain_rand.max_push_force_xyz_gripper = list(
-        ZGWSARM_FORCE_COMPONENT_RANGE
-    )
-    cfg.domain_rand.max_push_force_xyz_gripper_freed = list(
-        ZGWSARM_FORCE_COMPONENT_RANGE
-    )
-    cfg.domain_rand.push_gripper_stators = False
-    cfg.domain_rand.push_gripper_interval_s = [3.5, 9.0]
-    cfg.domain_rand.push_gripper_duration_s = [1.0, 3.0]
-    cfg.domain_rand.max_push_vel_xyz_gripper = [-40.0, 40.0]
-
-    cfg.domain_rand.push_robot_base = False
-    cfg.domain_rand.push_robot_interval_s = 5.0
-    cfg.domain_rand.push_robot_duration_s = [1.0, 2.0]
-    cfg.domain_rand.max_push_vel_xyz_robot = [-40.0, 40.0]
-
-
-def _configure_zgwsarm_terrain(cfg):
-    cfg.terrain.border_size = 0.0
-    cfg.terrain.mesh_type = "boxes_tm"
-    cfg.terrain.num_cols = 20
-    cfg.terrain.num_rows = 20
-    cfg.terrain.terrain_width = 5.0
-    cfg.terrain.terrain_length = 5.0
-    cfg.terrain.x_init_range = 1.0
-    cfg.terrain.y_init_range = 1.0
-    cfg.terrain.yaw_init_range = 3.14
-    cfg.terrain.teleport_thresh = 0.3
-    cfg.terrain.teleport_robots = False
-    cfg.terrain.center_robots = True
-    cfg.terrain.center_span = 4
-    cfg.terrain.horizontal_scale = 0.10
-    cfg.terrain.curriculum = False
-    cfg.terrain.terrain_noise_magnitude = 0.0
-    cfg.terrain.terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0]
-
-
-def _configure_zgwsarm_simulation(cfg):
-    cfg.sim.physx.max_gpu_contact_pairs = 2 ** 23
-    cfg.sim.physx.default_buffer_size_multiplier = 3
-    cfg.normalization.clip_actions = 4.0
-    cfg.normalization.friction_range = [0, 1]
-    cfg.normalization.ground_friction_range = [0, 1]
+# =============================================================================
+# Validation and environment factory
+# =============================================================================
 
 
 def _validate_zgwsarm_config(cfg):
@@ -498,9 +605,20 @@ def _validate_zgwsarm_config(cfg):
         "stance_symmetry_scale",
         "wheel_lateral_slip_scale",
         "wheel_rolling_error_scale",
+        "wheel_v_tracking_scale",
+        "wheel_yaw_tracking_scale",
+        "wheel_command_active_threshold",
     ):
         if getattr(cfg.rewards, name) <= 0.0:
             raise ValueError(f"ZGWSARM rewards.{name} must be positive")
+    lateral_mode_weights = cfg.rewards.wheel_lateral_slip_mode_weights
+    expected_modes = {
+        "stand", "pure_x", "pure_y", "pure_yaw", "xy", "x_yaw", "y_yaw", "full"
+    }
+    if set(lateral_mode_weights) != expected_modes:
+        raise ValueError("wheel_lateral_slip_mode_weights must define all modes")
+    if any(float(value) < 0.0 for value in lateral_mode_weights.values()):
+        raise ValueError("wheel lateral-slip mode weights must be non-negative")
     # Reward aggregation is a task tuning choice. Positive clipping, Ji22,
     # and fully signed rewards are all supported by the shared reward loop;
     # only enabling both positive-only modes at once is ambiguous because the
@@ -544,15 +662,20 @@ def configure_zgwsarm_compliance(cfg=None):
     config_zgwsarm(cfg)
 
     _configure_zgwsarm_environment(cfg)
+    _configure_zgwsarm_terrain(cfg)
     _configure_zgwsarm_observations(cfg)
     _configure_zgwsarm_commands(cfg)
-    _configure_zgwsarm_rewards(cfg)
     _configure_zgwsarm_domain_randomization(cfg)
-    _configure_zgwsarm_terrain(cfg)
+    _configure_zgwsarm_rewards(cfg)
+    _configure_zgwsarm_normalization(cfg)
     _configure_zgwsarm_simulation(cfg)
     _validate_zgwsarm_config(cfg)
 
     return cfg
+
+# =============================================================================
+# Play and diagnostic overrides
+# =============================================================================
 
 
 def configure_zgwsarm_compliance_play(
@@ -588,14 +711,11 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [0.0, 0.0]
-    cfg.commands.limit_vel_yaw = [0.0, 0.0]
-    # Training-only mixture must not randomly zero explicit play/diagnostic
-    # commands supplied by the gamepad or CLI.
-    cfg.commands.planar_command_mixture = None
-
+    cfg.commands.ang_vel_yaw = [0.3, 0.3]
+    cfg.commands.limit_vel_yaw = [0.3, 0.3]
+    cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
     # Task-owned play defaults. Edit this block to change normal play behavior.
-    cfg.commands.hybrid_mode = "force"
+    cfg.commands.hybrid_mode = "position"
     cfg.commands.ee_sphe_radius = [0.40, 0.40]
     cfg.commands.limit_ee_sphe_radius = [0.40, 0.40]
     cfg.commands.ee_sphe_pitch = [0.0, 0.0]
@@ -666,7 +786,6 @@ def configure_zgwsarm_diagnostic_play(
         )
 
     cfg.diagnostics.zgwsarm_scenario = scenario
-    cfg.commands.planar_command_mixture = None
     cfg.terrain.mesh_type = "plane"
     cfg.terrain.teleport_robots = False
     cfg.terrain.yaw_init_range = 0.0
@@ -702,6 +821,14 @@ def configure_zgwsarm_diagnostic_play(
     cfg.commands.limit_vel_y = [0.0, 0.0]
     cfg.commands.ang_vel_yaw = [fixed_ang_vel_yaw, fixed_ang_vel_yaw]
     cfg.commands.limit_vel_yaw = [fixed_ang_vel_yaw, fixed_ang_vel_yaw]
+    if fixed_lin_vel_x != 0.0 and fixed_ang_vel_yaw != 0.0:
+        cfg.commands.planar_command_mixture = {"x_yaw": 1.0}
+    elif fixed_lin_vel_x != 0.0:
+        cfg.commands.planar_command_mixture = {"pure_x": 1.0}
+    elif fixed_ang_vel_yaw != 0.0:
+        cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
+    else:
+        cfg.commands.planar_command_mixture = {"stand": 1.0}
 
     if scenario in {"zero_action", "velocity_arm_fixed"}:
         # These scenarios isolate the base controller. Starting the arm at its
@@ -759,6 +886,11 @@ def configure_zgwsarm_diagnostic_play(
     return cfg
 
 
+# =============================================================================
+# Public config wrappers
+# =============================================================================
+
+
 class ZGWSARMComplianceCfg(ConfigNode):
     def __init__(self):
         configured = configure_zgwsarm_compliance()
@@ -779,6 +911,7 @@ __all__ = [
     "ZGWSARM_EE_YAW_RANGE",
     "ZGWSARM_FORCE_COMPONENT_RANGE",
     "ZGWSARM_REWARD_SCALES",
+    "ZGWSARM_TRAINING_NAME",
     "ZGWSARMComplianceCfg",
     "ZGWSARMComplianceCfgPPO",
     "configure_zgwsarm_compliance",

@@ -72,6 +72,11 @@ moving 模式以配置的低速分段运动连续更新局部锚点，并限制�
 模式不会在每个物理步重新采样。free/position/reset 会清空锚点状态，下次进入有效 force
 segment 时重新采样和锁存。
 
+`boxes`/`boxes_tm` 地形现在使用两组互不复用的概率配置：
+`heightfield_terrain_proportions` 包含 10 类基础高度场，
+`box_terrain_proportions` 包含 5 类 Box 结构地形。两者的固定类别顺序写在任务配置旁，
+启动时会检查维数、非负性及概率和是否为 1，避免同一概率槽在两个生成阶段表示不同地形。
+
 这次锚点改动保持 23 维命令、观测、奖励、动作、PD 增益和位置轨迹逻辑不变。旧的
 `2026-08-24_18-44-10_wbc_release` 策略仍可用于修改前后的 A/B 基线评估，但它没有针对
 新锚点随机化重新训练，因此不应单独作为最终训练效果结论。当前弹簧阻尼仍为
@@ -214,7 +219,9 @@ python scripts/train.py --task zgwsarm_compliance
 `--task` 是必填参数，避免多机器人环境下误用默认任务。直接运行
 `python scripts/train.py` 会返回参数错误。
 
-训练默认 headless，使用 `b1_z1_config.py` 中的环境数量、训练轮数和保存间隔。
+训练默认 headless。默认运行名称分别由任务配置顶部的
+`B1_Z1_TRAINING_NAME` / `ZGWSARM_TRAINING_NAME` 控制；单次运行推荐使用
+`--run-name` 覆盖，不需要修改文件。环境数量、训练轮数和保存间隔也由对应任务配置管理。
 
 ### 6.2 常用覆盖参数
 
@@ -469,13 +476,18 @@ ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz �
 `torque = 15 * action - 0.2 * wheel_velocity` 并按 URDF 裁剪到 `±28 N·m`。
 轮角不进入策略关节位置观测，真实轮速仍保留。
 
-首阶段 locomotion 训练使用 `vx in [-0.5, 0.5] m/s`、`vy = 0`、
-`yaw_rate in [-0.3, 0.3] rad/s`。这三个 active range 与单-bin curriculum 的 limit
-range 保持一致，避免从训练一开始采到更大的隐藏命令。为隔离固定轮 skid-steer
-转向与轮子横向擦滑惩罚之间的冲突，首阶段关闭 `wheel_lateral_slip`，但继续保留
-`wheel_rolling_consistency`。平面命令按 20% 静止、30% 纯前进、40% 纯 yaw、10%
-前进加转弯弧线显式混合，避免纯 yaw 在连续采样中几乎不出现。后续扩大 yaw 范围
-或恢复侧滑惩罚应作为独立 A/B 变量。
+ZGWSARM 的 base velocity 不再进入多维 bin grid，而使用“先采 locomotion mode、再在
+激活维度内连续采样”的课程。当前 mixture 为 `stand/pure_x/pure_yaw/x_yaw =
+0.2/0.3/0.4/0.1`；初始范围是 `vx=±0.5 m/s`、`vy=0`、`yaw_rate=±0.3 rad/s`，最终
+limit 为 `±1.0/0/±1.5`。`vx/vy/yaw` 根据各自 pure-mode MAE 独立按 `0.1` 扩张，
+不会因其他方向成功而联动；关闭 `command_curriculum` 时直接使用 limit，但仍保留结构化
+mode mixture。运行时范围和统计量会随 checkpoint 保存、续训时恢复。
+
+纯 yaw 时 stance posture/symmetry 仍开启，使腿保持正常支撑并让左右轮差速承担转向。
+轮速 shaping 分成 `wheel_v_tracking` 与 `wheel_yaw_tracking`，分别由真实轮位姿、轮半径和
+轮关节速度估算 `vx_hat/yaw_hat`，只在对应 command 维度激活时生效。横向滑动惩罚按 mode
+加权：pure-x 保持完整约束，pure-yaw 降低，预留的 lateral modes 默认关闭该约束。XYZ
+力目标仍不经过速度课程，而是按 `ee_force_x/y/z` 独立采样并渐变施加。
 
 ZGWSARM 原地 Position/Force/Binary 测试：
 

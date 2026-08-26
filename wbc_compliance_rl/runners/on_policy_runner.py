@@ -317,6 +317,11 @@ class OnPolicyRunner:
                 "python": random.getstate(),
             },
         }
+        curriculum_state_fn = getattr(
+            self.env, "command_curriculum_state_dict", None
+        )
+        if curriculum_state_fn is not None:
+            checkpoint["command_curriculum_state"] = curriculum_state_fn()
         if torch.cuda.is_available():
             checkpoint["rng_state"]["cuda"] = torch.cuda.get_rng_state_all()
         if hasattr(self.alg, "decoder_optimizer"):
@@ -369,6 +374,14 @@ class OnPolicyRunner:
             self.alg.learning_rate = runner_state["learning_rate"]
             for param_group in self.alg.optimizer.param_groups:
                 param_group["lr"] = self.alg.learning_rate
+
+        if getattr(self.runner_cfg, "resume_curriculum", True):
+            load_curriculum_state = getattr(
+                self.env, "load_command_curriculum_state_dict", None
+            )
+            curriculum_state = loaded.get("command_curriculum_state")
+            if load_curriculum_state is not None and curriculum_state is not None:
+                load_curriculum_state(curriculum_state)
 
         rng_state = loaded.get("rng_state")
         if rng_state is not None:

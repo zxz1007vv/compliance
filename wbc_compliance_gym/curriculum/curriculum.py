@@ -16,12 +16,26 @@ def key_is_met(metric_cache, config, ep_len, target_key, env_id, threshold):
 
 class Curriculum:
     def set_to(self, low, high, value=1.0):
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+        if low.shape != (len(self.keys),) or high.shape != (len(self.keys),):
+            raise ValueError(
+                "curriculum active bounds must match the number of dimensions"
+            )
+        if np.any(low > high):
+            raise ValueError(
+                "curriculum active lower bounds must not exceed upper bounds"
+            )
         inds = np.logical_and(
             self.grid >= low[:, None],
             self.grid <= high[:, None]
         ).all(axis=0)
 
-        assert len(inds) != 0, "You are intializing your distribution with an empty domain!"
+        if not np.any(inds):
+            raise ValueError(
+                "curriculum active bounds select no bin centres; increase the "
+                "bin count or align the active bounds with the curriculum grid"
+            )
 
         self.weights[inds] = value
 
@@ -31,6 +45,20 @@ class Curriculum:
         self.cfg = cfg = {}
         self.indices = indices = {}
         for key, v_range in key_ranges.items():
+            if len(v_range) != 3:
+                raise ValueError(
+                    f"curriculum range {key!r} must be (low, high, bins)"
+                )
+            if v_range[0] > v_range[1]:
+                raise ValueError(f"curriculum range {key!r} has low > high")
+            if (
+                not isinstance(v_range[2], (int, np.integer))
+                or isinstance(v_range[2], (bool, np.bool_))
+                or v_range[2] <= 0
+            ):
+                raise ValueError(
+                    f"curriculum range {key!r} requires positive integer bins"
+                )
             bin_size = (v_range[1] - v_range[0]) / v_range[2]
             cfg[key] = np.linspace(v_range[0] + bin_size / 2, v_range[1] - bin_size / 2, v_range[2])
             indices[key] = np.linspace(0, v_range[2]-1, v_range[2])
@@ -72,21 +100,28 @@ class Curriculum:
             ).all(axis=0)
             temp_weights = np.zeros_like(self.weights)
             temp_weights[valid_inds] = self.weights[valid_inds]
-            inds = self.rng.choice(self.indices, batch_size, p=temp_weights / temp_weights.sum())
+            weights = temp_weights
         else: # if no bounds given
-            # print(self.weights, self.weights.sum())
-            inds = self.rng.choice(self.indices, batch_size, p=self.weights / self.weights.sum())
+            weights = self.weights
+
+        weight_sum = weights.sum()
+        if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+            raise ValueError(
+                "curriculum has no finite positive sampling weight; active "
+                "bounds and bin centres are inconsistent"
+            )
+        probabilities = weights / weight_sum
+        if not np.all(np.isfinite(probabilities)):
+            raise ValueError("curriculum sampling probabilities are not finite")
+        inds = self.rng.choice(self.indices, batch_size, p=probabilities)
 
         return self.grid.T[inds], inds
 
     def sample_uniform_from_cell(self, centroids):
         bin_sizes = np.array([*self.bin_sizes.values()])
-        low, high = centroids + bin_sizes / 2, centroids - bin_sizes / 2
-        # print(self.rng.get_state()[-3])
-        rand = self.rng.uniform(low, high)
-        # print(self.rng.uniform(low, high))
-        # print(self.rng.uniform(low, high))
-        return rand#.clip(self.lows, self.highs)
+        low = np.maximum(centroids - bin_sizes / 2, self.lows)
+        high = np.minimum(centroids + bin_sizes / 2, self.highs)
+        return self.rng.uniform(low, high)
 
     def sample(self, batch_size, low=None, high=None):
         # print("low: ", low, " high: ", high)

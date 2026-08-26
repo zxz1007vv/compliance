@@ -73,7 +73,7 @@ def config_z1(Cnfg: Union[Cfg, Meta]):
     _.teleport_robots = True
     _.border_size = 50
 
-    _.terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0]
+    _.heightfield_terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0, 0]
     _.curriculum = False
 
     _ = Cnfg.env
@@ -90,8 +90,6 @@ def config_z1(Cnfg: Union[Cfg, Meta]):
     _.heading_command = False
     _.resampling_time = 10.0
     _.command_curriculum = True
-    _.num_lin_vel_bins = 30
-    _.num_ang_vel_bins = 30
     _.lin_vel_x = [-0.6, 0.6]
     _.lin_vel_y = [-0.6, 0.6]
     _.ang_vel_yaw = [-1, 1]

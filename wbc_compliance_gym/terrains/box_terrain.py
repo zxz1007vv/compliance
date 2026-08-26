@@ -1,5 +1,9 @@
 from .terrain import Terrain
 from wbc_compliance_gym.utils.terrain import perlin
+from wbc_compliance_gym.utils.terrain_proportions import (
+    BOX_TERRAIN_TYPES,
+    cumulative_terrain_proportions,
+)
 
 from isaacgym import gymapi
 import numpy as np
@@ -74,6 +78,11 @@ class BoxTerrain(Terrain):
             self.env.device) / self.env.cfg.terrain.vertical_scale
 
         n_border_boxes = self.env.cfg.terrain.num_border_boxes
+        cume_props = cumulative_terrain_proportions(
+            self.env.cfg.terrain.box_terrain_proportions,
+            BOX_TERRAIN_TYPES,
+            "terrain.box_terrain_proportions",
+        )
 
         for i in range(self.env.cfg.terrain.num_rows):
             for j in range(self.env.cfg.terrain.num_cols):
@@ -137,8 +146,6 @@ class BoxTerrain(Terrain):
                         terrain_type = 0
                         self.terrain_cell_roughnesses[i, j] = 0.0
                         self.terrain_cell_frictions[i, j] = 3.0
-                cume_props = np.cumsum(self.env.cfg.terrain.terrain_proportions)
-
                 if self.env.custom_heightmap is not None:
                     self.terrain_cell_center_heights[i, j] = self.env.custom_heightmap[(start_px+end_px)//2, (start_py+end_py)//2]
                     self.height_samples[start_px:end_px, start_py:end_py] = self.env.custom_heightmap[start_px:end_px, start_py:end_py] / self.env.cfg.terrain.vertical_scale

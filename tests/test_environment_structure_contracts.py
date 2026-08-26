@@ -40,6 +40,7 @@ from wbc_compliance_gym.commands import (
 )
 from wbc_compliance_gym.envs.b1_z1_compliance.b1_z1_config import B1Z1Cfg
 from wbc_compliance_gym.envs.base.legged_robot import LeggedRobot
+from wbc_compliance_gym.curriculum import RewardThresholdCurriculum
 from wbc_compliance_gym.rewards import B1LocoZ1GaitfreeRewards, B1Z1Rewards, REWARD_CONTAINERS
 from wbc_compliance_gym.sensors import OrientationSensor, SENSOR_TYPES, make_sensor
 
@@ -109,7 +110,7 @@ class EnvironmentStructureContracts(unittest.TestCase):
         )
 
         self.assertEqual(
-            "44e68ff3ab777f43aaace74a9901bb962e0f2f4614a7e59b9620231552be09a2",
+            "3cadd6fc1512d094a92239698fa41e5824ac1227115b74754fa6e540f58d1a82",
             digest.hexdigest(),
         )
         self.assertEqual((8,), env.env_command_bins.shape)
@@ -121,6 +122,30 @@ class EnvironmentStructureContracts(unittest.TestCase):
         cfg.commands.curriculum_type = "UnknownCurriculum"
         with self.assertRaises(ValueError):
             build_command_curricula(cfg.commands)
+
+    def test_command_curriculum_rejects_one_bin_active_limit_mismatch(self):
+        cfg = B1Z1Cfg()
+        cfg.commands.lin_vel_x = [-0.5, 0.5]
+        cfg.commands.limit_vel_x = [-1.0, 1.0]
+        cfg.commands.num_bins_vel_x = 1
+
+        with self.assertRaisesRegex(ValueError, "uses one bin"):
+            build_command_curricula(cfg.commands)
+
+    def test_curriculum_rejects_empty_or_zero_weight_sampling_domains(self):
+        curriculum = RewardThresholdCurriculum(seed=1, x=(-1.0, 1.0, 2))
+        with self.assertRaisesRegex(ValueError, "select no bin centres"):
+            curriculum.set_to(np.array([0.0]), np.array([0.0]))
+        with self.assertRaisesRegex(ValueError, "no finite positive sampling weight"):
+            curriculum.sample(batch_size=1)
+
+    def test_curriculum_samples_inside_selected_cell_edges(self):
+        curriculum = RewardThresholdCurriculum(seed=1, x=(-1.0, 1.0, 4))
+        curriculum.set_to(np.array([-0.5]), np.array([0.5]))
+
+        samples, _ = curriculum.sample(batch_size=4096)
+        self.assertTrue(np.all(samples[:, 0] >= -0.5))
+        self.assertTrue(np.all(samples[:, 0] <= 0.5))
 
     def test_cartesian_force_ranges_do_not_filter_the_legacy_curriculum(self):
         cfg = B1Z1Cfg()
@@ -138,6 +163,19 @@ class EnvironmentStructureContracts(unittest.TestCase):
         self.assertFalse(np.isnan(curriculum.weights).any())
         self.assertGreater(curriculum.weights.sum(), 0.0)
         curriculum.sample(batch_size=8)
+
+    def test_cartesian_force_sampling_uses_active_not_limit_ranges(self):
+        cfg = B1Z1Cfg()
+        set_force_command_ranges(
+            cfg.commands,
+            ([-20.0, 20.0], [-10.0, 10.0], [5.0, 15.0]),
+            update_limits=False,
+        )
+
+        self.assertEqual(
+            ([-20.0, 20.0], [-10.0, 10.0], [5.0, 15.0]),
+            force_command_ranges(cfg.commands),
+        )
 
     def test_control_mode_sampling_matches_legacy_operations(self):
         for mode in ("mixed", "binary"):

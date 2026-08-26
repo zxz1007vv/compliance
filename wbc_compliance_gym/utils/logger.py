@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+from wbc_compliance_gym.commands import LOCOMOTION_MODE_NAMES
+
 class Logger:
     def __init__(self, env):
         self.env = env
@@ -91,6 +93,50 @@ class Logger:
             for curriculum, category in zip(self.env.curricula, self.env.category_names):
                 extras[f"curriculum/distribution"][f"weights_{category}"] = curriculum.weights
                 extras[f"curriculum/distribution"][f"grid_{category}"] = curriculum.grid
+        velocity_curriculum = getattr(self.env, "velocity_curriculum", None)
+        if velocity_curriculum is not None:
+            episode = extras["train/episode"]
+            for axis, value_range in zip(
+                ("vx", "vy", "yaw"), velocity_curriculum.current_ranges
+            ):
+                episode[f"current_{axis}_min"] = value_range[0]
+                episode[f"current_{axis}_max"] = value_range[1]
+            for mode_id, mode_name in enumerate(LOCOMOTION_MODE_NAMES):
+                episode[f"command_mode/{mode_name}_count"] = torch.sum(
+                    self.env.locomotion_mode_ids == mode_id
+                )
+            for axis, stats, expanded in zip(
+                ("vx", "vy", "yaw"),
+                velocity_curriculum.statistics,
+                velocity_curriculum.last_expanded,
+            ):
+                episode[f"pure_{axis}_mae"] = stats.pure_mae
+                episode[f"active_{axis}_mae"] = stats.active_mae
+                episode[f"{axis}_curriculum_expanded"] = float(expanded)
+                episode[f"{axis}_curriculum_expansion_count"] = (
+                    stats.expansion_count
+                )
+            wheel = self.env.get_wheel_command_kinematics()
+            episode["wheel_v_hat"] = torch.mean(wheel["vx_hat"])
+            episode["wheel_yaw_hat"] = torch.mean(wheel["yaw_hat"])
+            episode["vx_cmd"] = torch.mean(self.env.commands[:, 0])
+            episode["yaw_cmd"] = torch.mean(self.env.commands[:, 2])
+            episode["actual_base_vx"] = torch.mean(self.env.base_lin_vel[:, 0])
+            episode["actual_base_yaw_rate"] = torch.mean(
+                self.env.base_ang_vel[:, 2]
+            )
+            episode["wheel_v_tracking_error"] = torch.mean(
+                torch.abs(wheel["vx_hat"] - self.env.commands[:, 0])
+            )
+            episode["wheel_yaw_tracking_error"] = torch.mean(
+                torch.abs(wheel["yaw_hat"] - self.env.commands[:, 2])
+            )
+            episode["mean_left_wheel_speed"] = torch.mean(
+                wheel["mean_left_wheel_speed"]
+            )
+            episode["mean_right_wheel_speed"] = torch.mean(
+                wheel["mean_right_wheel_speed"]
+            )
         # if self.env.cfg.env.send_timeouts:
         extras["time_outs"] = self.env.time_out_buf
         extras["train/episode"]["Number of env. terminated on time_outs"] = len(self.env.time_out_buf.nonzero(as_tuple=False).flatten())

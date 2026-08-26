@@ -15,6 +15,8 @@ from wbc_compliance_gym.commands import (
     INDEX_EE_POS_PITCH_CMD,
     INDEX_EE_POS_RADIUS_CMD,
     INDEX_EE_POS_YAW_CMD,
+    LOCOMOTION_MODE_ACTIVE_AXES,
+    LOCOMOTION_MODE_NAMES,
 )
 
 from .common import WholeBodyComplianceRewards
@@ -121,10 +123,9 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         )
         return torch.square(error)
 
-    def _stationary_command_mask(self):
-        command_motion = torch.linalg.norm(self.env.commands[:, :2], dim=1)
-        command_motion += torch.abs(self.env.commands[:, 2])
-        return command_motion < self.env.cfg.rewards.stand_still_command_threshold
+    def _translation_stationary_mask(self):
+        translation = torch.linalg.norm(self.env.commands[:, :2], dim=1)
+        return translation < self.env.cfg.rewards.stand_still_command_threshold
 
     def _reward_stance_posture(self):
         """Regularize leg posture only for the zero-velocity command slice."""
@@ -135,7 +136,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             ),
             dim=1,
         )
-        return posture_error * self._stationary_command_mask().float()
+        return posture_error * self._translation_stationary_mask().float()
 
     def _reward_stance_symmetry(self):
         """Prevent one-sided collapse while allowing symmetric crouching."""
@@ -169,7 +170,32 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         symmetry_error = torch.mean(
             torch.square(torch.stack(errors, dim=1) / scale), dim=1
         )
-        return symmetry_error * self._stationary_command_mask().float()
+        return symmetry_error * self._translation_stationary_mask().float()
+
+    def _locomotion_axis_mask(self, axis):
+        if hasattr(self.env, "locomotion_mode_ids"):
+            return LOCOMOTION_MODE_ACTIVE_AXES.to(self.env.commands.device)[
+                self.env.locomotion_mode_ids, axis
+            ]
+        return torch.abs(self.env.commands[:, axis]) > float(
+            self.env.cfg.rewards.wheel_command_active_threshold
+        )
+
+    def _reward_wheel_v_tracking(self):
+        wheel = self.env.get_wheel_command_kinematics()
+        error = wheel["vx_hat"] - self.env.commands[:, 0]
+        self.env.wheel_v_tracking_error_buf = torch.abs(error)
+        scale = float(self.env.cfg.rewards.wheel_v_tracking_scale)
+        reward = torch.exp(-torch.square(error / scale))
+        return reward * self._locomotion_axis_mask(0).float()
+
+    def _reward_wheel_yaw_tracking(self):
+        wheel = self.env.get_wheel_command_kinematics()
+        error = wheel["yaw_hat"] - self.env.commands[:, 2]
+        self.env.wheel_yaw_tracking_error_buf = torch.abs(error)
+        scale = float(self.env.cfg.rewards.wheel_yaw_tracking_scale)
+        reward = torch.exp(-torch.square(error / scale))
+        return reward * self._locomotion_axis_mask(2).float()
 
     @staticmethod
     def _contact_weighted_mean(values, contact):
@@ -239,7 +265,18 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         error = torch.square(
             wheel_state["velocities_base"][:, :, 1] / scale
         )
-        return self._contact_weighted_mean(error, wheel_state["contact"])
+        penalty = self._contact_weighted_mean(error, wheel_state["contact"])
+        if not hasattr(self.env, "locomotion_mode_ids"):
+            return penalty
+        weights = self.env.cfg.rewards.wheel_lateral_slip_mode_weights
+        if hasattr(weights, "items"):
+            weights = dict(weights.items())
+        mode_weights = torch.tensor(
+            [float(weights[name]) for name in LOCOMOTION_MODE_NAMES],
+            dtype=penalty.dtype,
+            device=penalty.device,
+        )
+        return penalty * mode_weights[self.env.locomotion_mode_ids]
 
     def _reward_wheel_rolling_consistency(self):
         wheel_state = self.env.get_wheel_kinematics()

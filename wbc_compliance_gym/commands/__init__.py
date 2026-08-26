@@ -35,7 +35,15 @@ from .commands import (
     force_command_ranges,
     sample_control_modes,
     set_force_command_ranges,
+    validate_command_curriculum_ranges,
     validate_control_mode,
+)
+from .velocity_curriculum import (
+    AXIS_NAMES,
+    LOCOMOTION_MODE_ACTIVE_AXES,
+    LOCOMOTION_MODE_NAMES,
+    LOCOMOTION_MODE_TO_ID,
+    ContinuousVelocityCurriculum,
 )
 
 __all__ = [name for name in globals() if name.startswith("INDEX_")] + [
@@ -51,5 +59,11 @@ __all__ = [name for name in globals() if name.startswith("INDEX_")] + [
     "force_command_ranges",
     "sample_control_modes",
     "set_force_command_ranges",
+    "validate_command_curriculum_ranges",
     "validate_control_mode",
+    "AXIS_NAMES",
+    "LOCOMOTION_MODE_ACTIVE_AXES",
+    "LOCOMOTION_MODE_NAMES",
+    "LOCOMOTION_MODE_TO_ID",
+    "ContinuousVelocityCurriculum",
 ]

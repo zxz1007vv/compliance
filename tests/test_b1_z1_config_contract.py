@@ -15,7 +15,7 @@ from wbc_compliance_gym.utils.config_utils import config_fingerprint
 
 
 EXPECTED_ENV_CONFIG_SHA256 = (
-    "cf9478b1efa3a3d6eb591b721b2b2e0b175419f5cb101f4b367591e12bf2f427"
+    "61440c2d5f7f96e998611bb37eb65fd46fb2b6db104faa1179bb76fa5d08d446"
 )
 EXPECTED_TRAIN_CONFIG_SHA256 = (
     "3971bb0ad9795963582e9f46a46121722055b5390850bee43e38798b6596df9b"
@@ -23,6 +23,18 @@ EXPECTED_TRAIN_CONFIG_SHA256 = (
 
 
 class B1Z1ConfigContract(unittest.TestCase):
+    def test_terrain_layers_have_independent_probability_vectors(self):
+        cfg = B1Z1Cfg()
+        self.assertEqual(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            cfg.terrain.heightfield_terrain_proportions,
+        )
+        self.assertEqual(
+            [1.0, 0.0, 0.0, 0.0, 0.0],
+            cfg.terrain.box_terrain_proportions,
+        )
+        self.assertFalse(hasattr(cfg.terrain, "terrain_proportions"))
+
     def test_environment_config_matches_pre_refactor_baseline(self):
         cfg = B1Z1Cfg()
         self.assertEqual(config_fingerprint(cfg), EXPECTED_ENV_CONFIG_SHA256)

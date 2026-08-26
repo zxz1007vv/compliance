@@ -146,8 +146,28 @@ class Cfg(PrefixProto, cli=False):
         num_rows = 10  # number of terrain rows (levels)
         num_cols = 20  # number of terrain cols (types)
         num_border_boxes = 0
-        # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
-        terrain_proportions = [0.1, 0.1, 0.35, 0.25, 0.2]
+        # 基础高度场概率，固定顺序为：光滑坡、粗糙坡、负高度阶梯、正高度阶梯、
+        # 离散障碍、踏脚石、预留平地1、预留平地2、均匀粗糙、半平地半粗糙。
+        heightfield_terrain_proportions = [
+            0.1,   # 0：光滑金字塔坡面
+            0.1,   # 1：粗糙金字塔坡面
+            0.35,  # 2：负高度阶梯
+            0.25,  # 3：正高度阶梯
+            0.2,   # 4：离散方块障碍
+            0.0,   # 5：踏脚石
+            0.0,   # 6：预留平地
+            0.0,   # 7：预留平地
+            0.0,   # 8：均匀随机粗糙地形
+            0.0,   # 9：半块平地、半块粗糙地形
+        ]
+        # boxes/boxes_tm 的结构层概率，固定顺序为：平地、下楼梯、上楼梯、坡面、坑。
+        box_terrain_proportions = [
+            1.0,  # 0：平地结构
+            0.0,  # 1：下楼梯
+            0.0,  # 2：上楼梯
+            0.0,  # 3：坡面
+            0.0,  # 4：深坑
+        ]
         # trimesh only:
         slope_treshold = 0.75  # slopes above this threshold will be corrected to vertical surfaces
         difficulty_scale = 1.
@@ -274,9 +294,7 @@ class Cfg(PrefixProto, cli=False):
         curriculum_type = "RewardThresholdCurriculum"
         lipschitz_threshold = 0.9
 
-        num_lin_vel_bins = 30
         lin_vel_step = 0.3
-        num_ang_vel_bins = 30
         ang_vel_step = 0.3
         distribution_update_extension_distance = 1
         curriculum_seed = 100

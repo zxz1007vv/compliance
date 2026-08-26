@@ -1221,6 +1221,8 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         # teleport robots to prevent falling off the edge
         self._teleport_robots(torch.arange(self.num_envs, device=self.device), self.cfg)
 
+        self._accumulate_velocity_curriculum_metrics()
+
         # resample commands
         sample_interval = int(self.cfg.commands.resampling_time / self.dt)
         env_ids = (self.episode_length_buf % sample_interval == 0).nonzero(as_tuple=False).flatten()

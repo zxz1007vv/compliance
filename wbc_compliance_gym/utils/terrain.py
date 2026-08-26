@@ -7,6 +7,10 @@ from isaacgym import terrain_utils
 from numpy.random import choice
 
 from wbc_compliance_gym.envs.base.legged_robot_config import Cfg
+from wbc_compliance_gym.utils.terrain_proportions import (
+    HEIGHTFIELD_TERRAIN_TYPES,
+    cumulative_terrain_proportions,
+)
 
 
 class Terrain:
@@ -52,7 +56,11 @@ class Terrain:
             return self.cfg.row_indices, self.cfg.col_indices, self.eval_cfg.row_indices, self.eval_cfg.col_indices
 
     def _load_cfg(self, cfg):
-        cfg.proportions = [np.sum(cfg.terrain_proportions[:i + 1]) for i in range(len(cfg.terrain_proportions))]
+        cfg.proportions = cumulative_terrain_proportions(
+            cfg.heightfield_terrain_proportions,
+            HEIGHTFIELD_TERRAIN_TYPES,
+            "terrain.heightfield_terrain_proportions",
+        )
 
         cfg.num_sub_terrains = cfg.num_rows * cfg.num_cols
         cfg.env_origins = np.zeros((cfg.num_rows, cfg.num_cols, 3))

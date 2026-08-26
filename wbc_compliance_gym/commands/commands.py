@@ -19,6 +19,11 @@ from isaacgym.torch_utils import (
 import torch
 
 from wbc_compliance_gym.utils.math_utils import plus_2pi_wrap_to_pi
+from .velocity_curriculum import (
+    LOCOMOTION_MODE_ACTIVE_AXES,
+    LOCOMOTION_MODE_TO_ID,
+    ContinuousVelocityCurriculum,
+)
 
 
 INDEX_LIN_VEL_X = 0
@@ -48,7 +53,6 @@ INDEX_FORCE_OR_POSITION_INDICATOR = 22
 
 COMMAND_DIMENSION = 23
 VALID_CONTROL_MODES = ("position", "force", "binary", "mixed")
-PLANAR_COMMAND_MIXTURE_MODES = ("stand", "linear_x", "yaw", "arc")
 
 TRANSFORM_BASE_ARM_X = 0.2
 TRANSFORM_BASE_ARM_Z = 0.1585
@@ -168,7 +172,7 @@ def set_force_command_ranges(command_cfg, ranges, *, update_limits=True):
 def command_curriculum_ranges(command_cfg):
     """Return ordered keyword ranges for the curriculum constructor."""
     return {
-        dimension.curriculum_key: dimension.curriculum_range(command_cfg)
+        dimension.curriculum_key: _curriculum_range(command_cfg, dimension)
         for dimension in COMMAND_SCHEMA
     }
 
@@ -176,12 +180,60 @@ def command_curriculum_ranges(command_cfg):
 def command_active_bounds(command_cfg):
     """Return the legacy low/high arrays used to activate curriculum bins."""
     active_ranges = [
-        dimension.active_range(command_cfg) for dimension in COMMAND_SCHEMA
+        _active_range(command_cfg, dimension) for dimension in COMMAND_SCHEMA
     ]
     return (
         np.array([value_range[0] for value_range in active_ranges]),
         np.array([value_range[1] for value_range in active_ranges]),
     )
+
+
+def _uses_continuous_velocity_curriculum(command_cfg):
+    return getattr(command_cfg, "velocity_sampling", None) == "continuous_modes"
+
+
+def _curriculum_range(command_cfg, dimension):
+    if _uses_continuous_velocity_curriculum(command_cfg) and dimension.index < 3:
+        return (0.0, 0.0, 1)
+    return dimension.curriculum_range(command_cfg)
+
+
+def _active_range(command_cfg, dimension):
+    if _uses_continuous_velocity_curriculum(command_cfg) and dimension.index < 3:
+        return (0.0, 0.0)
+    return dimension.active_range(command_cfg)
+
+
+def validate_command_curriculum_ranges(command_cfg):
+    """Reject ranges that a single curriculum cell would silently widen."""
+    for dimension in COMMAND_SCHEMA:
+        curriculum_low, curriculum_high, bins = _curriculum_range(
+            command_cfg, dimension
+        )
+        active_low, active_high = _active_range(command_cfg, dimension)
+        if curriculum_low > curriculum_high:
+            raise ValueError(
+                f"commands.{dimension.curriculum_key} curriculum range is reversed"
+            )
+        if active_low > active_high:
+            raise ValueError(
+                f"commands.{dimension.curriculum_key} active range is reversed"
+            )
+        if active_low < curriculum_low or active_high > curriculum_high:
+            raise ValueError(
+                f"commands.{dimension.curriculum_key} active range "
+                f"[{active_low}, {active_high}] must lie inside curriculum "
+                f"range [{curriculum_low}, {curriculum_high}]"
+            )
+        if bins == 1 and (active_low, active_high) != (
+            curriculum_low,
+            curriculum_high,
+        ):
+            raise ValueError(
+                f"commands.{dimension.curriculum_key} uses one bin but its "
+                "active and curriculum ranges differ; that cell would sample "
+                "the full curriculum limit"
+            )
 
 
 def build_command_curricula(command_cfg):
@@ -198,6 +250,7 @@ def build_command_curricula(command_cfg):
     if command_cfg.gaitwise_curricula:
         category_names = ["pronk", "trot", "pace", "bound"]
 
+    validate_command_curriculum_ranges(command_cfg)
     ranges = command_curriculum_ranges(command_cfg)
     curricula = [
         RewardThresholdCurriculum(seed=command_cfg.curriculum_seed, **ranges)
@@ -214,42 +267,6 @@ def validate_control_mode(mode):
         choices = ", ".join(VALID_CONTROL_MODES)
         raise ValueError(f"Unknown control mode {mode!r}; choose one of: {choices}")
     return mode
-
-
-def apply_planar_command_mixture(commands, env_ids, probabilities):
-    """Create explicit stand/linear/yaw/arc slices after continuous sampling."""
-    if probabilities is None or len(env_ids) == 0:
-        return
-    if len(probabilities) != len(PLANAR_COMMAND_MIXTURE_MODES):
-        raise ValueError(
-            "planar_command_mixture must contain probabilities for "
-            + ", ".join(PLANAR_COMMAND_MIXTURE_MODES)
-        )
-    probabilities = torch.as_tensor(
-        probabilities, dtype=commands.dtype, device=commands.device
-    )
-    if torch.any(probabilities < 0.0) or not torch.isclose(
-        probabilities.sum(),
-        torch.tensor(1.0, dtype=commands.dtype, device=commands.device),
-    ):
-        raise ValueError("planar_command_mixture must be non-negative and sum to 1")
-
-    draws = torch.rand(len(env_ids), device=commands.device)
-    boundaries = torch.cumsum(probabilities, dim=0)
-    stand = env_ids[draws < boundaries[0]]
-    linear_x = env_ids[
-        torch.logical_and(boundaries[0] <= draws, draws < boundaries[1])
-    ]
-    yaw = env_ids[
-        torch.logical_and(boundaries[1] <= draws, draws < boundaries[2])
-    ]
-
-    commands[stand, :3] = 0.0
-    commands[linear_x, 1:3] = 0.0
-    commands[yaw, :2] = 0.0
-    # Arc samples retain the continuously sampled vx/yaw pair.  Lateral
-    # velocity remains whatever the task distribution specifies (zero for
-    # ZGWSARM phase one).
 
 
 def sample_control_modes(mode, count, device):
@@ -717,6 +734,30 @@ class CommandLifecycleMixin:
         self.env_command_bins = np.zeros(len(env_ids), dtype=np.int32)
         self.env_command_categories = np.zeros(len(env_ids), dtype=np.int32)
 
+        self.velocity_curriculum = None
+        if _uses_continuous_velocity_curriculum(self.cfg.commands):
+            self.velocity_curriculum = ContinuousVelocityCurriculum(
+                self.cfg.commands
+            )
+            self.locomotion_mode_ids = torch.full(
+                (self.num_envs,),
+                LOCOMOTION_MODE_TO_ID["stand"],
+                dtype=torch.long,
+                device=self.device,
+            )
+            self._velocity_error_sums = torch.zeros(
+                self.num_envs, 3, dtype=torch.float, device=self.device
+            )
+            self._velocity_error_counts = torch.zeros_like(
+                self._velocity_error_sums
+            )
+            self._pure_velocity_error_sums = torch.zeros_like(
+                self._velocity_error_sums
+            )
+            self._pure_velocity_error_counts = torch.zeros_like(
+                self._velocity_error_sums
+            )
+
         # 0 = position, 1 = force
         self.force_or_position_control = torch.zeros(
             self.num_envs,
@@ -724,6 +765,52 @@ class CommandLifecycleMixin:
             device=self.device,
             requires_grad=False,
         )
+
+    def _accumulate_velocity_curriculum_metrics(self):
+        if self.velocity_curriculum is None:
+            return
+        actual = torch.stack(
+            (self.base_lin_vel[:, 0], self.base_lin_vel[:, 1], self.base_ang_vel[:, 2]),
+            dim=1,
+        )
+        absolute_error = torch.abs(actual - self.commands[:, :3])
+        active = LOCOMOTION_MODE_ACTIVE_AXES.to(self.device)[
+            self.locomotion_mode_ids
+        ]
+        active &= torch.abs(self.commands[:, :3]) > float(
+            self.cfg.commands.velocity_curriculum_active_threshold
+        )
+        self._velocity_error_sums += absolute_error * active.float()
+        self._velocity_error_counts += active.float()
+        for axis, mode_name in enumerate(("pure_x", "pure_y", "pure_yaw")):
+            pure = self.locomotion_mode_ids == LOCOMOTION_MODE_TO_ID[mode_name]
+            pure &= active[:, axis]
+            self._pure_velocity_error_sums[:, axis] += absolute_error[:, axis] * pure
+            self._pure_velocity_error_counts[:, axis] += pure.float()
+
+    def _finalize_velocity_curriculum_metrics(self, env_ids):
+        if self.velocity_curriculum is None or len(env_ids) == 0:
+            return
+        pure_sums = self._pure_velocity_error_sums[env_ids].sum(dim=0).tolist()
+        pure_counts = self._pure_velocity_error_counts[env_ids].sum(dim=0).tolist()
+        active_sums = self._velocity_error_sums[env_ids].sum(dim=0).tolist()
+        active_counts = self._velocity_error_counts[env_ids].sum(dim=0).tolist()
+        self.velocity_curriculum.record(
+            pure_sums, pure_counts, active_sums, active_counts
+        )
+        self._velocity_error_sums[env_ids] = 0.0
+        self._velocity_error_counts[env_ids] = 0.0
+        self._pure_velocity_error_sums[env_ids] = 0.0
+        self._pure_velocity_error_counts[env_ids] = 0.0
+
+    def command_curriculum_state_dict(self):
+        if self.velocity_curriculum is None:
+            return None
+        return self.velocity_curriculum.state_dict()
+
+    def load_command_curriculum_state_dict(self, state):
+        if self.velocity_curriculum is not None and state is not None:
+            self.velocity_curriculum.load_state_dict(state)
 
     def _resample_force_or_position_control(self, env_ids):
         previous_modes = self.force_or_position_control[env_ids].clone()
@@ -755,6 +842,8 @@ class CommandLifecycleMixin:
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
             return
+
+        self._finalize_velocity_curriculum_metrics(env_ids)
 
         timesteps = int(self.cfg.commands.resampling_time / self.dt)
         ep_len = min(self.cfg.env.max_episode_length, timesteps)
@@ -883,11 +972,12 @@ class CommandLifecycleMixin:
                 new_commands[:, : self.cfg.commands.num_commands]
             ).to(self.device)
 
-        apply_planar_command_mixture(
-            self.commands,
-            env_ids,
-            getattr(self.cfg.commands, "planar_command_mixture", None),
-        )
+        if self.velocity_curriculum is not None:
+            velocity_commands, mode_ids = self.velocity_curriculum.sample(
+                len(env_ids), self.device
+            )
+            self.commands[env_ids, :3] = velocity_commands
+            self.locomotion_mode_ids[env_ids] = mode_ids
 
         if self.cfg.commands.num_commands > 5:
             if self.cfg.commands.gaitwise_curricula:

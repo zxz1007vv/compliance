@@ -67,6 +67,15 @@ _B1_Z1_EXTRA_ZERO_REWARDS = {
     "orientation_control",
 }
 
+# Default run directory suffix: <timestamp>_<training-name>.
+# ``python scripts/train.py ... --run-name NAME`` overrides it per launch.
+B1_Z1_TRAINING_NAME = "wbc_release"
+
+
+# =============================================================================
+# Environment
+# =============================================================================
+
 
 def _configure_b1_z1_environment(cfg):
     cfg.robot.name = "b1_plus_z1"
@@ -95,6 +104,58 @@ def _configure_b1_z1_environment(cfg):
         0.8800,
         -0.8595,
     ]
+
+
+# =============================================================================
+# Terrain
+# =============================================================================
+
+
+def _configure_b1_z1_terrain(cfg):
+    cfg.terrain.border_size = 0.0
+    cfg.terrain.mesh_type = "boxes_tm"
+    cfg.terrain.num_cols = 20
+    cfg.terrain.num_rows = 20
+    cfg.terrain.terrain_width = 5.0
+    cfg.terrain.terrain_length = 5.0
+    cfg.terrain.x_init_range = 1.0
+    cfg.terrain.y_init_range = 1.0
+    cfg.terrain.yaw_init_range = 3.14
+    cfg.terrain.teleport_thresh = 0.3
+    cfg.terrain.teleport_robots = False
+    cfg.terrain.center_robots = True
+    cfg.terrain.center_span = 4
+    cfg.terrain.horizontal_scale = 0.10
+    cfg.terrain.curriculum = False
+    cfg.terrain.terrain_noise_magnitude = 0.0
+    # 第一层基础高度场概率：
+    # [光滑坡, 粗糙坡, 负高度阶梯, 正高度阶梯, 离散障碍, 踏脚石,
+    #  预留平地1, 预留平地2, 均匀粗糙, 半平地半粗糙]。
+    cfg.terrain.heightfield_terrain_proportions = [
+        0.0,  # 0：光滑金字塔坡面
+        0.0,  # 1：粗糙金字塔坡面
+        0.0,  # 2：负高度阶梯
+        0.0,  # 3：正高度阶梯
+        0.0,  # 4：离散方块障碍
+        0.0,  # 5：踏脚石
+        0.0,  # 6：预留平地
+        0.0,  # 7：预留平地
+        1.0,  # 8：均匀随机粗糙地形
+        0.0,  # 9：半块平地、半块粗糙地形
+    ]
+    # 第二层 Box 结构概率：[平地, 下楼梯, 上楼梯, 坡面, 坑]。
+    cfg.terrain.box_terrain_proportions = [
+        1.0,  # 0：平地结构
+        0.0,  # 1：下楼梯
+        0.0,  # 2：上楼梯
+        0.0,  # 3：坡面
+        0.0,  # 4：深坑
+    ]
+
+
+# =============================================================================
+# Observations
+# =============================================================================
 
 
 def _configure_b1_z1_observations(cfg):
@@ -128,6 +189,11 @@ def _configure_b1_z1_observations(cfg):
     cfg.obs_scales.ee_force_z = 0.01
 
 
+# =============================================================================
+# Commands
+# =============================================================================
+
+
 def _configure_b1_z1_commands(cfg):
     cfg.commands.control_ee_ori = False
     cfg.commands.control_ee_ori_only_yaw = False
@@ -143,9 +209,6 @@ def _configure_b1_z1_commands(cfg):
     cfg.commands.resampling_time = 10
     cfg.commands.command_curriculum = True
     cfg.commands.distributional_commands = True
-    cfg.commands.num_lin_vel_bins = 30
-    cfg.commands.num_ang_vel_bins = 30
-
     cfg.commands.lin_vel_x = [-1.0, 1.0]
     cfg.commands.limit_vel_x = [-1.0, 1.0]
     cfg.commands.lin_vel_y = [-0.0, 0.0]
@@ -230,44 +293,30 @@ def _configure_b1_z1_commands(cfg):
     ):
         setattr(cfg.commands, f"num_bins_{name}", 1)
 
-#奖励函数配置与参数
-def _configure_b1_z1_rewards(cfg):
-    cfg.rewards.reward_container_name = "B1LocoZ1GaitfreeRewards"
-    cfg.rewards.only_positive_rewards = True
-    cfg.rewards.only_positive_rewards_ji22_style = False
-    cfg.rewards.sigma_rew_neg = 0.02
-    cfg.rewards.total_rew_scale = 0.2
+# =============================================================================
+# Control and asset
+# =============================================================================
 
-    cfg.rewards.use_terminal_foot_height = False
-    cfg.rewards.use_terminal_body_height = True
-    cfg.rewards.terminal_body_height = 0.3
-    cfg.rewards.use_terminal_roll_pitch = True
-    cfg.rewards.terminal_body_ori = 0.9
-    cfg.rewards.use_terminal_torque_legs_limits = False
-    cfg.rewards.use_terminal_torque_arm_limits = False
-    cfg.rewards.termination_torque_min_time = 25
 
-    cfg.rewards.base_height_target = 0.55
-    cfg.rewards.soft_dof_pos_limit = 0.9
-    cfg.rewards.soft_torque_limit_leg = 1.0
-    cfg.rewards.soft_torque_limit_arm = 1.0
-    cfg.rewards.max_contact_force = 550.0
-    cfg.rewards.gait_force_sigma = 30000
-    cfg.rewards.gait_vel_sigma = 10.0
-    cfg.rewards.footswing_height = 0.1
-    cfg.rewards.swing_ratio = 0.3
-    cfg.rewards.stance_ratio = 0.3
-    cfg.rewards.stance_width = 0.45
-    cfg.rewards.stance_length = 0.65
-    cfg.rewards.sigma_force_magnitude = 1 / 50
-    cfg.rewards.sigma_force_z = 1 / 50
-    cfg.rewards.maintain_ori_force_envs = True
+def _configure_b1_z1_control_and_asset(cfg):
+    cfg.control.decimation = 4
+    cfg.control.arm_scale_reduction = 2.0
+    cfg.asset.default_dof_drive_mode = 1
+    cfg.asset.fix_base_link = False
+    cfg.asset.penalize_contacts_on = [
+        "thigh",
+        "calf",
+        "link02",
+        "link03",
+        "link06",
+        "hip",
+    ]
+    cfg.asset.terminate_after_contacts_on = ["gripperMover"]
 
-    apply_reward_scales(cfg, B1_Z1_REWARD_SCALES)
-    for name in _B1_Z1_NEGATIVE_ZERO_REWARDS:
-        setattr(cfg.reward_scales, name, -0.0)
-    for name in _B1_Z1_EXTRA_ZERO_REWARDS:
-        setattr(cfg.reward_scales, name, 0.0)
+
+# =============================================================================
+# Domain randomization
+# =============================================================================
 
 
 def _configure_b1_z1_domain_randomization(cfg):
@@ -325,43 +374,77 @@ def _configure_b1_z1_domain_randomization(cfg):
     cfg.domain_rand.max_push_vel_xyz_robot = [-40.0, 40.0]
 
 
-def _configure_b1_z1_terrain_and_control(cfg):
-    cfg.terrain.border_size = 0.0
-    cfg.terrain.mesh_type = "boxes_tm"
-    cfg.terrain.num_cols = 20
-    cfg.terrain.num_rows = 20
-    cfg.terrain.terrain_width = 5.0
-    cfg.terrain.terrain_length = 5.0
-    cfg.terrain.x_init_range = 1.0
-    cfg.terrain.y_init_range = 1.0
-    cfg.terrain.yaw_init_range = 3.14
-    cfg.terrain.teleport_thresh = 0.3
-    cfg.terrain.teleport_robots = False
-    cfg.terrain.center_robots = True
-    cfg.terrain.center_span = 4
-    cfg.terrain.horizontal_scale = 0.10
-    cfg.terrain.curriculum = False
-    cfg.terrain.terrain_noise_magnitude = 0.0
-    cfg.terrain.terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0]
+# =============================================================================
+# Rewards and termination
+# =============================================================================
 
-    cfg.control.decimation = 4
-    cfg.control.arm_scale_reduction = 2.0
-    cfg.asset.default_dof_drive_mode = 1
-    cfg.asset.fix_base_link = False
-    cfg.asset.penalize_contacts_on = [
-        "thigh",
-        "calf",
-        "link02",
-        "link03",
-        "link06",
-        "hip",
-    ]
-    cfg.asset.terminate_after_contacts_on = ["gripperMover"]
+
+def _configure_b1_z1_rewards(cfg):
+    cfg.rewards.reward_container_name = "B1LocoZ1GaitfreeRewards"
+    cfg.rewards.only_positive_rewards = True
+    cfg.rewards.only_positive_rewards_ji22_style = False
+    cfg.rewards.sigma_rew_neg = 0.02
+    cfg.rewards.total_rew_scale = 0.2
+
+    cfg.rewards.use_terminal_foot_height = False
+    cfg.rewards.use_terminal_body_height = True
+    cfg.rewards.terminal_body_height = 0.3
+    cfg.rewards.use_terminal_roll_pitch = True
+    cfg.rewards.terminal_body_ori = 0.9
+    cfg.rewards.use_terminal_torque_legs_limits = False
+    cfg.rewards.use_terminal_torque_arm_limits = False
+    cfg.rewards.termination_torque_min_time = 25
+
+    cfg.rewards.base_height_target = 0.55
+    cfg.rewards.soft_dof_pos_limit = 0.9
+    cfg.rewards.soft_torque_limit_leg = 1.0
+    cfg.rewards.soft_torque_limit_arm = 1.0
+    cfg.rewards.max_contact_force = 550.0
+    cfg.rewards.gait_force_sigma = 30000
+    cfg.rewards.gait_vel_sigma = 10.0
+    cfg.rewards.footswing_height = 0.1
+    cfg.rewards.swing_ratio = 0.3
+    cfg.rewards.stance_ratio = 0.3
+    cfg.rewards.stance_width = 0.45
+    cfg.rewards.stance_length = 0.65
+    cfg.rewards.sigma_force_magnitude = 1 / 50
+    cfg.rewards.sigma_force_z = 1 / 50
+    cfg.rewards.maintain_ori_force_envs = True
+
+    apply_reward_scales(cfg, B1_Z1_REWARD_SCALES)
+    for name in _B1_Z1_NEGATIVE_ZERO_REWARDS:
+        setattr(cfg.reward_scales, name, -0.0)
+    for name in _B1_Z1_EXTRA_ZERO_REWARDS:
+        setattr(cfg.reward_scales, name, 0.0)
+
+
+# =============================================================================
+# Normalization and viewer
+# =============================================================================
+
+
+def _configure_b1_z1_normalization_and_viewer(cfg):
     cfg.viewer.follow_robot = False
 
     cfg.normalization.clip_actions = 10.0
     cfg.normalization.friction_range = [0, 1]
     cfg.normalization.ground_friction_range = [0, 1]
+
+
+# =============================================================================
+# PPO training and run identity
+# =============================================================================
+
+
+def _configure_b1_z1_training(cfg):
+    """Task-owned run identity; explicit CLI arguments override this value."""
+    cfg.run.training_name = B1_Z1_TRAINING_NAME
+    return cfg
+
+
+# =============================================================================
+# Validation and environment factory
+# =============================================================================
 
 
 def _validate_b1_z1_config(cfg):
@@ -385,13 +468,20 @@ def configure_b1_z1_ik(cfg=None):
     cfg = new_compliance_env_config(cfg)
     config_b1_plus_z1(cfg)
     _configure_b1_z1_environment(cfg)
+    _configure_b1_z1_terrain(cfg)
     _configure_b1_z1_observations(cfg)
     _configure_b1_z1_commands(cfg)
-    _configure_b1_z1_rewards(cfg)
+    _configure_b1_z1_control_and_asset(cfg)
     _configure_b1_z1_domain_randomization(cfg)
-    _configure_b1_z1_terrain_and_control(cfg)
+    _configure_b1_z1_rewards(cfg)
+    _configure_b1_z1_normalization_and_viewer(cfg)
     _validate_b1_z1_config(cfg)
     return cfg
+
+
+# =============================================================================
+# Play overrides
+# =============================================================================
 
 
 def configure_b1_z1_play(
@@ -465,6 +555,11 @@ def configure_b1_z1_play(
     return cfg
 
 
+# =============================================================================
+# Public config wrappers
+# =============================================================================
+
+
 class B1Z1Cfg(ConfigNode):
     """Fresh, isolated environment config for the b1_z1_ik task."""
 
@@ -478,11 +573,13 @@ class B1Z1CfgPPO(ConfigNode):
 
     def __init__(self):
         configured = build_compliance_ppo_config("b1_z1_ik")
+        _configure_b1_z1_training(configured)
         super().__init__(**vars(configured))
 
 
 __all__ = [
     "B1_Z1_REWARD_SCALES",
+    "B1_Z1_TRAINING_NAME",
     "B1Z1Cfg",
     "B1Z1CfgPPO",
     "configure_b1_z1_ik",

@@ -146,6 +146,24 @@ class RLStructureContracts(unittest.TestCase):
         )
         self.assertEqual(tuple(algorithm.storage.actions.shape), (2, 4, 19))
 
+    def test_ppo_step_does_not_require_optional_curriculum_bins(self):
+        torch.manual_seed(8)
+        algorithm = PPO(self.make_model(), device="cpu")
+        algorithm.init_storage(4, 2, [87], [16], [870], [19])
+        algorithm.act(
+            torch.zeros(4, 87),
+            torch.zeros(4, 16),
+            torch.zeros(4, 870),
+        )
+
+        algorithm.process_env_step(
+            torch.zeros(4),
+            torch.zeros(4, dtype=torch.bool),
+            {},
+        )
+
+        self.assertEqual(1, algorithm.storage.step)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,27 +115,18 @@ def _configure_zgwsarm_environment(cfg):
 
 
 def _configure_zgwsarm_terrain(cfg):
-    # 整张地形网格外围的额外边界宽度，单位 m；
-    cfg.terrain.border_size = 0.0
+    cfg.terrain.border_size = 0.0 # 整张地形网格外围的额外边界宽度，单位 m；
     # 地形实现类型：使用由方块地形拼接并转换得到的三角网格。
     cfg.terrain.mesh_type = "boxes_tm"
-    # 地形网格的列数；启用地形课程时通常用于区分不同地形类型。
     cfg.terrain.num_cols = 20
-    # 地形网格的行数；启用地形课程时通常用于表示不同难度等级。
     cfg.terrain.num_rows = 20
-    # 每个地形单元沿横向的尺寸，单位 m。
     cfg.terrain.terrain_width = 5.0
-    # 每个地形单元沿纵向的尺寸，单位 m。
     cfg.terrain.terrain_length = 5.0
-    # 机器人复位时相对地形单元中心的 X 方向随机初始偏移范围，单位 m。
-    cfg.terrain.x_init_range = 1.0
-    # 机器人复位时相对地形单元中心的 Y 方向随机初始偏移范围，单位 m。
+    cfg.terrain.x_init_range = 1.0  #复位时相对地形单位中心位置
     cfg.terrain.y_init_range = 1.0
-    # 机器人复位时初始偏航角的对称随机范围，约为 [-3.14, 3.14] rad。
     cfg.terrain.yaw_init_range = 3.14
-    # 启用越界传送时，机器人距地形单元边缘小于该距离便触发传送，单位 m。
-    cfg.terrain.teleport_thresh = 0.3
-    # 是否在机器人越过地形单元边界时将其传送至另一侧；False 表示禁用。
+    cfg.terrain.teleport_thresh = 0.3   # 启用越界传送时，机器人距地形单元边缘小于该距离便触发传送，单位 m。
+    # 是否在机器人越过地形单元边界时将其传送至另一侧；
     cfg.terrain.teleport_robots = False
     # 是否只从整张地形网格的中央区域为机器人选择出生单元。
     cfg.terrain.center_robots = True
@@ -148,9 +139,27 @@ def _configure_zgwsarm_terrain(cfg):
     # 基础地形生成阶段的高度噪声幅值，单位 m；0 表示该项不添加噪声。
     # 注意：domain_rand.randomize_tile_roughness 仍可另外叠加单块地形粗糙度。
     cfg.terrain.terrain_noise_magnitude = 0.0
-    # 各候选地形分支的采样权重。对 boxes_tm 当前实现而言，该设置不会选中
-    # 下楼梯、上楼梯、坡面或坑等结构，因此生成基础平地（仍可叠加单块粗糙度）。
-    cfg.terrain.terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0, 1.0]
+    # 第一层：基础高度场的采样概率，必须为 10 项且总和为 1。
+    cfg.terrain.heightfield_terrain_proportions = [
+        0.0,  # 0：光滑金字塔坡面（内部各半采样正、负坡度）
+        0.0,  # 1：叠加随机起伏的金字塔坡面
+        0.0,  # 2：负高度阶梯
+        0.0,  # 3：正高度阶梯
+        0.0,  # 4：离散方块障碍
+        0.0,  # 5：踏脚石
+        0.0,  # 6：预留槽位，当前实现为平地
+        0.0,  # 7：预留槽位，当前实现为平地
+        1.0,  # 8：均匀随机粗糙地形，幅值由 terrain_noise_magnitude 控制
+        0.0,  # 9：半块平地、半块固定幅值粗糙地形
+    ]
+    # 第二层：boxes/boxes_tm 结构地形的采样概率，必须为 5 项且总和为 1。
+    cfg.terrain.box_terrain_proportions = [
+        1.0,  # 0：平地结构；之后仍可叠加 tile roughness
+        0.0,  # 1：从机器人出生区域向外走时为下楼梯
+        0.0,  # 2：从机器人出生区域向外走时为上楼梯
+        0.0,  # 3：带中央平台的坡面
+        0.0,  # 4：深坑结构
+    ]
 
 
 # =============================================================================

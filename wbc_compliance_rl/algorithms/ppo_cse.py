@@ -85,7 +85,9 @@ class PPO:
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-        self.transition.env_bins = infos["env_bins"]
+        # Command-bin IDs are optional curriculum diagnostics and are not part
+        # of the PPO objective.  Keeping rollout collection independent of
+        # that logger-only field also supports tasks with curriculum disabled.
         # Bootstrapping on time outs
         if 'time_outs' in infos:
             self.transition.rewards += self.cfg.gamma * torch.squeeze(
@@ -120,7 +122,7 @@ class PPO:
 
         generator = self.storage.mini_batch_generator(self.cfg.num_mini_batches, self.cfg.num_learning_epochs)
         for obs_batch, critic_obs_batch, privileged_obs_batch, obs_history_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, masks_batch, env_bins_batch in generator:
+            old_mu_batch, old_sigma_batch, masks_batch in generator:
 
             self.actor_critic.act(obs_history_batch, masks=masks_batch)
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
@@ -219,4 +221,3 @@ class PPO:
         self.storage.clear()
 
         return mean_value_loss, mean_surrogate_loss, mean_adaptation_module_loss, mean_decoder_loss, mean_decoder_loss_student, mean_adaptation_module_test_loss, mean_decoder_test_loss, mean_decoder_test_loss_student, mean_adaptation_losses
-

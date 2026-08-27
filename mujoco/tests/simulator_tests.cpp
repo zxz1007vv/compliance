@@ -48,6 +48,8 @@ int main() {
     const auto unchanged_anchor_local =
         simulation.end_effector_force_field_anchor_local();
     const auto spring = simulation.end_effector_spring_force_world();
+    const auto spring_debug =
+        simulation.end_effector_spring_force_debug_state();
     for (int axis = 0; axis < 3; ++axis) {
       expect_close(unchanged_anchor_local[axis], anchor_local[axis],
                    "robot-relative force anchor changed in its local frame");
@@ -56,7 +58,13 @@ int main() {
                                   (updated_anchor[axis] - displaced_ee[axis]),
                               -force_limit, force_limit),
                    "spring force does not match the robot-relative field");
+      expect_close(spring_debug.clipped_world[axis], spring[axis],
+                   "spring debug clipped force mismatch");
     }
+
+    const auto wheel_positions = simulation.wheel_positions_base();
+    if (wheel_positions.size() != profile.wheel_dof_names.size())
+      throw std::runtime_error("wheel diagnostic order/size mismatch");
 
     simulation.stop_end_effector_force_field();
     if (simulation.end_effector_force_field_active())

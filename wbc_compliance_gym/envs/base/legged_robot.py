@@ -1774,12 +1774,12 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
         if new_selected_env_ids.nelement() > 0:
             self.freed_envs[new_selected_env_ids] = torch.rand(len(new_selected_env_ids), dtype=torch.float, device=self.device,
                                         requires_grad=False) > self.cfg.domain_rand.gripper_forced_prob
+            new_force_envs = new_selected_env_ids[
+                force_control_envs[new_selected_env_ids]
+            ]
+            newly_forced = new_force_envs[~self.freed_envs[new_force_envs]]
             if self._uses_independent_force_anchor():
-                new_force_envs = new_selected_env_ids[
-                    force_control_envs[new_selected_env_ids]
-                ]
                 newly_freed = new_force_envs[self.freed_envs[new_force_envs]]
-                newly_forced = new_force_envs[~self.freed_envs[new_force_envs]]
                 self._clear_force_anchor_state(newly_freed)
                 needs_mode = newly_forced[
                     self.force_anchor_mode[newly_forced]
@@ -1801,6 +1801,25 @@ class LeggedRobot(CommandLifecycleMixin, BaseTask):
                         device=self.device,
                     ).view(len(new_selected_env_ids))
                 )
+            # Keep these environments in the anchored force-control task but
+            # explicitly request zero force.  This is intentionally different
+            # from ``freed_envs``: the virtual spring remains present, so the
+            # policy must keep the end effector at the anchor instead of
+            # receiving a trivial zero-force sample with the field removed.
+            zero_command_probability = float(
+                getattr(cfg.domain_rand, "force_zero_command_prob", 0.0)
+            )
+            if newly_forced.nelement() > 0 and zero_command_probability > 0.0:
+                zero_command_envs = newly_forced[
+                    torch.rand(
+                        len(newly_forced),
+                        dtype=torch.float,
+                        device=self.device,
+                        requires_grad=False,
+                    )
+                    < zero_command_probability
+                ]
+                self.force_target[zero_command_envs, :3] = 0.0
             push_duration = torch_rand_float(cfg.domain_rand.push_duration_gripper_min, cfg.domain_rand.push_duration_gripper_max, (len(new_selected_env_ids), 1), device=self.device).view(len(new_selected_env_ids)) # 4.0/self.dt
             self.push_end_time[new_selected_env_ids] = self.episode_length_buf[new_selected_env_ids] + push_duration
             self.push_duration[new_selected_env_ids] = push_duration

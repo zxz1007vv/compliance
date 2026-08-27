@@ -32,6 +32,8 @@ struct MujocoSimulator::Impl {
   std::array<double, 3> force_field_anchor_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> spring_force_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> last_spring_force_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> spring_force_unclipped_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> last_spring_force_unclipped_world{{0.0, 0.0, 0.0}};
   std::array<double, 3> last_applied_force_world{{0.0, 0.0, 0.0}};
   MousePerturbationDebugState last_mouse_perturbation;
   double force_field_stiffness = 0.0;
@@ -224,6 +226,8 @@ struct MujocoSimulator::Impl {
     force_field_anchor_world = {{0.0, 0.0, 0.0}};
     spring_force_world = {{0.0, 0.0, 0.0}};
     last_spring_force_world = {{0.0, 0.0, 0.0}};
+    spring_force_unclipped_world = {{0.0, 0.0, 0.0}};
+    last_spring_force_unclipped_world = {{0.0, 0.0, 0.0}};
     last_applied_force_world = {{0.0, 0.0, 0.0}};
     last_mouse_perturbation = {};
     force_field_stiffness = 0.0;
@@ -318,6 +322,8 @@ void MujocoSimulator::stop_end_effector_force_field() {
   }
   impl_->spring_force_world = {{0.0, 0.0, 0.0}};
   impl_->last_spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->spring_force_unclipped_world = {{0.0, 0.0, 0.0}};
+  impl_->last_spring_force_unclipped_world = {{0.0, 0.0, 0.0}};
   impl_->force_field_latched_anchor_local = {{0.0, 0.0, 0.0}};
   impl_->force_field_anchor_local = {{0.0, 0.0, 0.0}};
   impl_->force_field_anchor_velocity_local = {{0.0, 0.0, 0.0}};
@@ -361,6 +367,47 @@ std::array<double, 3> MujocoSimulator::end_effector_spring_force_world() const {
   return impl_->last_spring_force_world;
 }
 
+SpringForceDebugState
+MujocoSimulator::end_effector_spring_force_debug_state() const {
+  return {end_effector_force_field_displacement_world(),
+          impl_->last_spring_force_unclipped_world,
+          impl_->last_spring_force_world};
+}
+
+std::vector<std::array<double, 3>>
+MujocoSimulator::wheel_positions_base() const {
+  std::vector<std::array<double, 3>> result;
+  result.reserve(impl_->profile.wheel_dof_names.size());
+  const double* base_position =
+      impl_->data->xpos + 3 * impl_->base_body;
+  const double* base_rotation =
+      impl_->data->xmat + 9 * impl_->base_body;
+  for (const auto& wheel_name : impl_->profile.wheel_dof_names) {
+    const std::size_t dof_index = impl_->profile.dof_index(wheel_name);
+    const int body = impl_->model->jnt_bodyid[impl_->joint_ids[dof_index]];
+    const double* wheel_position = impl_->data->xpos + 3 * body;
+    const std::array<double, 3> relative_world{{
+        wheel_position[0] - base_position[0],
+        wheel_position[1] - base_position[1],
+        wheel_position[2] - base_position[2],
+    }};
+    // MuJoCo stores a row-major local-to-world rotation. R^T maps world to
+    // the base frame and matches Isaac Gym's quat_rotate_inverse.
+    result.push_back({{
+        base_rotation[0] * relative_world[0] +
+            base_rotation[3] * relative_world[1] +
+            base_rotation[6] * relative_world[2],
+        base_rotation[1] * relative_world[0] +
+            base_rotation[4] * relative_world[1] +
+            base_rotation[7] * relative_world[2],
+        base_rotation[2] * relative_world[0] +
+            base_rotation[5] * relative_world[1] +
+            base_rotation[8] * relative_world[2],
+    }});
+  }
+  return result;
+}
+
 void MujocoSimulator::step(const std::vector<double>& torque) {
   if (torque.size() != impl_->actuator_ids.size())
     throw std::runtime_error("Torque vector has the wrong dimension");
@@ -376,6 +423,7 @@ void MujocoSimulator::step(const std::vector<double>& torque) {
       applied[axis] -= impl_->spring_force_world[axis];
   }
   impl_->spring_force_world = {{0.0, 0.0, 0.0}};
+  impl_->spring_force_unclipped_world = {{0.0, 0.0, 0.0}};
   impl_->spring_force_present = false;
   if (impl_->force_field_active) {
     impl_->advance_force_anchor_motion();
@@ -387,15 +435,19 @@ void MujocoSimulator::step(const std::vector<double>& torque) {
       const double displacement =
           impl_->force_field_anchor_world[axis] -
           impl_->data->xpos[3 * impl_->end_effector_body + axis];
-      impl_->spring_force_world[axis] = std::clamp(
+      impl_->spring_force_unclipped_world[axis] =
           impl_->force_field_stiffness * displacement -
-              impl_->force_field_damping * velocity_world[3 + axis],
+          impl_->force_field_damping * velocity_world[3 + axis];
+      impl_->spring_force_world[axis] = std::clamp(
+          impl_->spring_force_unclipped_world[axis],
           -impl_->force_field_limit, impl_->force_field_limit);
       applied[axis] += impl_->spring_force_world[axis];
     }
     impl_->spring_force_present = true;
   }
   impl_->last_spring_force_world = impl_->spring_force_world;
+  impl_->last_spring_force_unclipped_world =
+      impl_->spring_force_unclipped_world;
   for (int axis = 0; axis < 3; ++axis) {
     impl_->last_applied_force_world[axis] =
         impl_->data->xfrc_applied[6 * impl_->end_effector_body + axis];

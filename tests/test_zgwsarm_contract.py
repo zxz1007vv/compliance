@@ -403,9 +403,10 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual([-1.0, 1.0], cfg.commands.limit_vel_x)
         self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_y)
         self.assertEqual([0.0, 0.0], cfg.commands.limit_vel_y)
-        self.assertEqual([-0.5, 0.5], cfg.commands.ang_vel_yaw)
+        self.assertEqual([-0.2, 0.2], cfg.commands.ang_vel_yaw)
         self.assertEqual([-1.5, 1.5], cfg.commands.limit_vel_yaw)
-        self.assertFalse(cfg.commands.command_curriculum)
+        self.assertTrue(cfg.commands.command_curriculum)
+        self.assertEqual(0.05, cfg.commands.yaw_success_threshold)
         self.assertEqual("continuous_modes", cfg.commands.velocity_sampling)
         self.assertFalse(hasattr(cfg.commands, "num_bins_vel_x"))
         self.assertFalse(hasattr(cfg.commands, "num_bins_vel_y"))
@@ -423,7 +424,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertGreater(cfg.reward_scales.wheel_v_tracking, 0.0)
         self.assertGreater(cfg.reward_scales.wheel_yaw_tracking, 0.0)
         self.assertLess(cfg.reward_scales.stance_posture, 0.0)
-        self.assertEqual(-0.5, cfg.reward_scales.stance_posture)
+        self.assertEqual(-1.0, cfg.reward_scales.stance_posture)
         self.assertEqual(-2.0, cfg.reward_scales.stance_symmetry)
         self.assertEqual(-1.0, cfg.reward_scales.dof_pos_limits_leg)
         self.assertIn("BASE_LINK", cfg.asset.terminate_after_contacts_on)
@@ -440,6 +441,8 @@ class ZGWSARMContractTests(unittest.TestCase):
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
         )
         self.assertEqual("binary", cfg.commands.hybrid_mode)
+        self.assertEqual(0.8, cfg.domain_rand.gripper_forced_prob)
+        self.assertEqual(0.6, cfg.domain_rand.force_zero_command_prob)
 
     def test_initial_velocity_curriculum_samples_stay_inside_active_ranges(self):
         cfg = ZGWSARMComplianceCfg()
@@ -965,7 +968,7 @@ class ZGWSARMContractTests(unittest.TestCase):
             elif name == "x_yaw":
                 self.assertTrue(torch.all(commands[selected, 1] == 0.0))
         self.assertLessEqual(commands[:, 0].abs().max().item(), 0.5)
-        self.assertLessEqual(commands[:, 2].abs().max().item(), 0.5)
+        self.assertLessEqual(commands[:, 2].abs().max().item(), 0.2)
 
     def test_zgwsarm_legacy_grid_has_no_velocity_cartesian_product(self):
         cfg = ZGWSARMComplianceCfg()
@@ -985,7 +988,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         curriculum = ContinuousVelocityCurriculum(cfg.commands)
         curriculum.record([0.1, 0.0, 1.0], [2, 0, 2], [0.1, 0.0, 1.0], [2, 0, 2])
         self.assertEqual([-0.6, 0.6], curriculum.current_ranges[0])
-        self.assertEqual([-0.5, 0.5], curriculum.current_ranges[2])
+        self.assertEqual([-0.2, 0.2], curriculum.current_ranges[2])
         for _ in range(20):
             curriculum.expand(0)
         self.assertEqual([-1.0, 1.0], curriculum.current_ranges[0])

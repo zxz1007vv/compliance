@@ -30,6 +30,12 @@ struct ForceAnchorMotionConfig {
   std::array<double, 3> offset_limit{{0.05, 0.05, 0.03}};
 };
 
+struct SpringForceDebugState {
+  std::array<double, 3> displacement_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> unclipped_world{{0.0, 0.0, 0.0}};
+  std::array<double, 3> clipped_world{{0.0, 0.0, 0.0}};
+};
+
 class MujocoSimulator {
  public:
   explicit MujocoSimulator(const TaskProfile& profile, bool enable_viewer = false);
@@ -54,6 +60,10 @@ class MujocoSimulator {
   std::array<double, 3> end_effector_force_field_anchor_world() const;
   std::array<double, 3> end_effector_force_field_displacement_world() const;
   std::array<double, 3> end_effector_spring_force_world() const;
+  SpringForceDebugState end_effector_spring_force_debug_state() const;
+  // Current wheel centers expressed in the full floating-base frame, ordered
+  // exactly like TaskProfile::wheel_dof_names.
+  std::vector<std::array<double, 3>> wheel_positions_base() const;
   void step(const std::vector<double>& torque);
   double time() const;
   // Base angular velocity about its local Z axis, matching the trained yaw-rate

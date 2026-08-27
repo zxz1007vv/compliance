@@ -152,6 +152,42 @@ PD 增益、物理步长和安全限位等训练合同。不要把这些值复�
 服务器/回归测试可使用 `--headless`。`--steps N --no-realtime` 用于有限步快速回归。
 单独检查手柄原始输入可运行 `mujoco/build/mujoco_gamepad_probe`。
 
+### 确定性 force/yaw 诊断
+
+`mujoco_diagnostic` 与正常的 `mujoco_sim` 并列，不读取手柄，也不改变正常遥操作路径。
+它会自动完成匍匐、起立和 RL 接管，并默认使用平地场景。薄脚本会定位已构建的程序：
+
+```bash
+# Z 轴力：0 -> 5 -> 10 -> -5 N，每段 5 s，目标转换使用 1 s 线性渐变
+mujoco/scripts/run_diagnostic.sh \
+  --scenario force --axis z --values 0,5,10,-5 \
+  --segment-seconds 5 --settle-seconds 2 --ramp-seconds 1 \
+  --stiffness 200 --damping 20 --force-limit 30 \
+  --viewer --realtime
+
+# 纯 yaw：先 +0.2，再 -0.2 rad/s；vx 始终为 0
+mujoco/scripts/run_diagnostic.sh \
+  --scenario yaw --yaw-values 0.2,-0.2 \
+  --segment-seconds 5 --settle-seconds 2 \
+  --viewer --realtime
+```
+
+服务器上去掉 `--viewer --realtime` 即为无界面快速测试。可用 `--policy FILE`、
+`--bundle DIR` 或 `--scene FILE` 临时覆盖 YAML，但不会改写 YAML。
+
+Force 状态行给出 yaw 命令系下的 `cmd/actual/abs_error`、锚点位移、世界系未限幅力
+`raw_world` 和限幅后力 `clipped_world`。每段末尾汇总 XYZ MAE、锚点位移均值/最大值、
+世界 XYZ 分轴饱和率和任一轴饱和率。默认 `K=200,D=20` 对应训练中的
+`prop_kd=0.1`；普通遥操作 YAML 的 `D=6` 不会影响这项独立诊断。
+
+Yaw 状态行及分段汇总给出实际底盘 yaw rate、左右轮平均滚动线速度、按训练公式计算的
+`wheel_yaw_hat` 和方向检查。正 yaw 的期望符号是左轮负、右轮正；负 yaw 相反。
+完整参数可运行：
+
+```bash
+mujoco/scripts/run_diagnostic.sh --help
+```
+
 `--viewer` 直接复用 MuJoCo binary release 内的 `simulate/` 源码，因此界面与常用的
 官方 MuJoCo Viewer 一致：左右侧栏、鼠标相机、关节/执行器面板、传感器和 profiler
 都可用。它不是只绘制模型的简化 GLFW 窗口。构建可视化程序时，`MUJOCO_ROOT` 必须

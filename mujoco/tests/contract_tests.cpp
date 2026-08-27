@@ -114,6 +114,12 @@ int main() {
     state.joint_position = {0.5, 0};
     state.joint_velocity = {0, 2};
     mujoco::CommandState commands(profile);
+    commands.set_scripted_value(0, 1.5f);
+    expect(std::abs(commands.values()[0] - 1.5f) < 1e-6f,
+           "scripted command setter failed");
+    commands.set_scripted_force_mode(true);
+    expect(commands.force_mode(), "scripted force-mode setter failed");
+    commands.set_scripted_force_mode(false);
     mujoco::GamepadState pad;
     pad.connected = true;
     pad.left_y = -1;

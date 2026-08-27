@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace mujoco {
 namespace {
@@ -25,6 +26,19 @@ void CommandState::reset() {
   gripper_target_ = has_gripper_target_
                         ? static_cast<float>(profile_.default_dof_positions[profile_.dof_index(profile_.direct_gripper_dof)])
                         : 0.0f;
+}
+
+void CommandState::set_scripted_value(int index, float value) {
+  if (index < 0 || index >= static_cast<int>(commands_.size()))
+    throw std::out_of_range("Scripted command index is out of range");
+  commands_[index] = clamp_command(index, value);
+}
+
+void CommandState::set_scripted_force_mode(bool enabled) {
+  const bool changed = force_mode() != enabled;
+  commands_[22] = enabled ? 1.0f : 0.0f;
+  if (changed)
+    commands_[12] = commands_[13] = commands_[14] = 0.0f;
 }
 
 float CommandState::clamp_command(int index, float value) const {

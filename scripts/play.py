@@ -81,6 +81,15 @@ def parse_args():
         help="Training run directory; when omitted, --task selects its latest run",
     )
     parser.add_argument("--checkpoint", default="latest", help="Checkpoint iteration or 'latest'")
+    parser.add_argument(
+        "--policy-mode",
+        choices=("student", "teacher"),
+        default="student",
+        help=(
+            "student uses the deployable adaptation estimate; teacher feeds "
+            "privileged simulator observations directly to the same actor"
+        ),
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--steps", type=int, default=2000)
@@ -433,7 +442,8 @@ def print_zgwsarm_diagnostics(metrics):
 
 def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs=1, steps=2000,
          viewer=True, record_video=False, print_every=100, control_mode=None,
-         seed=1, force_amplitude=None, fix_base=False, output=None, diagnostic_scenario=None,
+         seed=1, force_amplitude=None, fix_base=False, output=None, policy_mode="student",
+         diagnostic_scenario=None,
          diagnostic_lin_vel_x=None, diagnostic_ang_vel_yaw=None):
     if num_envs < 1:
         raise ValueError("num_envs must be at least 1")
@@ -474,6 +484,7 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         control_mode=control_mode,
         seed=seed,
         force_amplitude=force_amplitude,
+        policy_mode=policy_mode,
         fix_base=fix_base,
         diagnostic_scenario=diagnostic_scenario,
         diagnostic_lin_vel_x=diagnostic_lin_vel_x,
@@ -484,7 +495,8 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
     print(
         f"Evaluation settings: mode={effective_mode}, seed={seed}, "
         f"num_envs={num_envs}, steps={steps}, fix_base={fix_base}, "
-        f"diagnostic_scenario={diagnostic_scenario or 'none'}"
+        f"diagnostic_scenario={diagnostic_scenario or 'none'}, "
+        f"policy_mode={policy_mode}"
     )
     cameras = []
     video_writer = None
@@ -497,7 +509,9 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         play_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         output_dir = run_dir / "play_outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
-        video_path = output_dir / f"play_{play_timestamp}_{policy_id}.mp4"
+        video_path = output_dir / (
+            f"play_{play_timestamp}_{policy_id}_{policy_mode}.mp4"
+        )
         video_writer = imageio.get_writer(str(video_path), fps=30)
         print(f"Play video: {video_path}")
 
@@ -546,6 +560,7 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
             "num_envs": num_envs,
             "steps": steps,
             "force_amplitude": force_amplitude,
+            "policy_mode": policy_mode,
             "fix_base": bool(env.cfg.asset.fix_base_link),
             "diagnostic_scenario": diagnostic_scenario,
             "diagnostic_lin_vel_x": diagnostic_lin_vel_x,
@@ -573,7 +588,8 @@ def play(task=None, run_dir=None, checkpoint="latest", device="cuda:0", num_envs
         evaluation_dir.mkdir(parents=True, exist_ok=True)
         evaluation_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         output_path = evaluation_dir / (
-            f"{evaluation_timestamp}_{policy_id}_{effective_mode}_seed{seed}.json"
+            f"{evaluation_timestamp}_{policy_id}_{effective_mode}_"
+            f"{policy_mode}_seed{seed}.json"
         )
     else:
         output_path = Path(output).expanduser().resolve()
@@ -605,6 +621,7 @@ if __name__ == "__main__":
             control_mode=args.control_mode,
             seed=args.seed,
             force_amplitude=args.force_amplitude,
+            policy_mode=args.policy_mode,
             fix_base=args.fix_base,
             diagnostic_scenario=args.diagnostic_scenario,
             diagnostic_lin_vel_x=args.diagnostic_lin_vel_x,

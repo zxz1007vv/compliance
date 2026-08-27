@@ -27,11 +27,11 @@ ZGWSARM_REWARD_SCALES = {
     # 底盘稳定
     "survival": 1.0,
     "orientation": -5.0,
-    "base_height": -5.0,
+    "base_height": -5.0,     #-5.0
     "ang_vel_xy": -0.05,
     "lin_vel_z": -4.0,
     # Only active for near-zero base commands, so locomotion remains free.
-    "stance_posture": -0.5,
+    "stance_posture": -1.0,  #-0.5
     # Reject one-sided arm-load collapse while allowing symmetric crouching.
     "stance_symmetry": -2.0,
 
@@ -206,21 +206,23 @@ def _configure_zgwsarm_observations(cfg):
 def _configure_zgwsarm_commands(cfg):
     cfg.commands.num_commands = 23
     cfg.commands.resampling_time = 10
-    cfg.commands.command_curriculum = False   #开启课程
+    cfg.commands.command_curriculum = True
     cfg.commands.distributional_commands = True
     cfg.commands.velocity_sampling = "continuous_modes"
     cfg.commands.lin_vel_x = [-0.5, 0.5]
     cfg.commands.limit_vel_x = [-1.0, 1.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [-0.5, 0.5]
+    cfg.commands.ang_vel_yaw = [-0.2, 0.2]
     cfg.commands.limit_vel_yaw = [-1.5, 1.5]
     cfg.commands.vx_curriculum_step = 0.1
     cfg.commands.vy_curriculum_step = 0.1
     cfg.commands.yaw_curriculum_step = 0.1
     cfg.commands.vx_success_threshold = 0.15
     cfg.commands.vy_success_threshold = 0.15
-    cfg.commands.yaw_success_threshold = 0.15
+    # A zero-yaw policy has roughly 0.1 rad/s MAE over [-0.2, 0.2], so the
+    # threshold must be lower to prevent curriculum expansion without turning.
+    cfg.commands.yaw_success_threshold = 0.05
     cfg.commands.velocity_curriculum_min_samples = 50000
     cfg.commands.velocity_curriculum_required_successes = 2
     cfg.commands.velocity_curriculum_ema_alpha = 0.5
@@ -378,6 +380,10 @@ def _configure_zgwsarm_domain_randomization(cfg):
     # 每次进入新的末端受力片段时，启用虚拟力场的概率；0.8 即约 80% 的
     # 片段由锚点弹簧施力，其余约 20% 为 freed（无锚点约束）片段。
     cfg.domain_rand.gripper_forced_prob = 0.8
+    # 在上述 forced 片段中，有 60% 显式使用 XYZ=0 N 的目标力。此时
+    # 锚点弹簧仍然存在，用于训练策略将末端维持在零力平衡点；
+    # 它不是 freed 环境，不会删除外力场。
+    cfg.domain_rand.force_zero_command_prob = 0.6
     # 可采样的力场锚点模式：两种模式都使用机器人相对坐标系；static 模式下
     # 锚点局部位置不动，moving 模式下锚点局部位置会随时间分段移动。
     cfg.domain_rand.force_anchor_modes = [
@@ -587,6 +593,13 @@ def _validate_zgwsarm_config(cfg):
             "invalid ZGWSARM force command frame "
             f"{cfg.rewards.force_command_frame!r}"
         )
+    force_zero_command_prob = float(
+        cfg.domain_rand.force_zero_command_prob
+    )
+    if not 0.0 <= force_zero_command_prob <= 1.0:
+        raise ValueError(
+            "ZGWSARM domain_rand.force_zero_command_prob must lie in [0, 1]"
+        )
     arm_reset_range = cfg.init_state.arm_reset_position_range
     if len(arm_reset_range) != 2 or arm_reset_range[0] > arm_reset_range[1]:
         raise ValueError(
@@ -716,13 +729,13 @@ def configure_zgwsarm_compliance_play(
     cfg.terrain.teleport_robots = False
     cfg.terrain.mesh_type = "plane"  # plane requires teleport_robots = False
 
-    cfg.commands.lin_vel_x = [0.0, 0.0]
-    cfg.commands.limit_vel_x = [0.0, 0.0]
+    cfg.commands.lin_vel_x = [1.0, 1.0]
+    cfg.commands.limit_vel_x = [1.0, 1.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [0.3, 0.3]
-    cfg.commands.limit_vel_yaw = [0.3, 0.3]
-    cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
+    cfg.commands.ang_vel_yaw = [0.0, 0.00]
+    cfg.commands.limit_vel_yaw = [0.0, 0.0]
+    cfg.commands.planar_command_mixture = {"pure_x": 1.0}
     # Task-owned play defaults. Edit this block to change normal play behavior.
     cfg.commands.hybrid_mode = "position"
     cfg.commands.ee_sphe_radius = [0.40, 0.40]

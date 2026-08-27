@@ -30,13 +30,19 @@ from wbc_compliance_rl.modules.actor_critic import ActorCritic
 
 
 class LocalPolicy:
-    def __init__(self, actor_critic, device):
+    def __init__(self, actor_critic, device, policy_mode="student"):
+        if policy_mode not in {"student", "teacher"}:
+            raise ValueError("policy_mode must be 'student' or 'teacher'")
         self.actor_critic = actor_critic
         self.device = device
+        self.policy_mode = policy_mode
 
     def __call__(self, obs, info=None):
         obs_history = obs["obs_history"].to(self.device)
-        latent = self.actor_critic.adaptation_module(obs_history)
+        if self.policy_mode == "teacher":
+            latent = obs["privileged_obs"].to(self.device)
+        else:
+            latent = self.actor_critic.adaptation_module(obs_history)
         actions = self.actor_critic.actor_body(
             torch.cat((obs_history, latent), dim=-1)
         )
@@ -46,21 +52,24 @@ class LocalPolicy:
 
 
 def load_local_policy(
-    run_dir, checkpoint, env, train_cfg_factory, device="cuda:0"
+    run_dir, checkpoint, env, train_cfg_factory, device="cuda:0",
+    policy_mode="student",
 ):
     run_dir, checkpoint_path, checkpoint_number = resolve_local_checkpoint(
         run_dir, checkpoint
     )
     local_config = load_run_config(run_dir)
     policy = _policy_from_checkpoint(
-        checkpoint_path, local_config, env, train_cfg_factory, device
+        checkpoint_path, local_config, env, train_cfg_factory, device,
+        policy_mode=policy_mode,
     )
     print(f"Loaded checkpoint: {checkpoint_path}")
     return policy, checkpoint_number
 
 
 def _policy_from_checkpoint(
-    checkpoint_path, config, env, train_cfg_factory, device
+    checkpoint_path, config, env, train_cfg_factory, device,
+    policy_mode="student",
 ):
     train_cfg = train_cfg_factory()
     apply_config(train_cfg.policy, config.get("AC_Args", {}))
@@ -75,7 +84,7 @@ def _policy_from_checkpoint(
     state_dict = loaded.get("model_state_dict", loaded)
     actor_critic.load_state_dict(state_dict)
     actor_critic.eval()
-    return LocalPolicy(actor_critic, device)
+    return LocalPolicy(actor_critic, device, policy_mode=policy_mode)
 
 
 def _load_legacy_split_policy(run, weights_path):
@@ -189,6 +198,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
              local_run_dir: str = None, checkpoint="latest",
              control_mode: str = None, seed: int = 1,
              force_amplitude: float = None, task_name: str = DEFAULT_TASK,
+             policy_mode: str = "student",
              diagnostic_scenario: str = None,
              diagnostic_lin_vel_x: float = None,
              diagnostic_ang_vel_yaw: float = None):
@@ -214,6 +224,12 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
         validate_control_mode(control_mode)
     if force_amplitude is not None and force_amplitude < 0:
         raise ValueError("force_amplitude must be non-negative")
+    if policy_mode not in {"student", "teacher"}:
+        raise ValueError("policy_mode must be 'student' or 'teacher'")
+    if run_path is not None and policy_mode == "teacher":
+        raise ValueError(
+            "teacher evaluation currently requires a local --run-dir checkpoint"
+        )
     if diagnostic_scenario is not None and task_name != "zgwsarm_compliance":
         raise ValueError(
             "diagnostic scenarios are currently available only for "
@@ -346,6 +362,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
     }
     env._evaluation_settings = {
         "control_mode": cfg.commands.hybrid_mode,
+        "policy_mode": policy_mode,
         "seed": seed,
         "force_amplitude": force_amplitude,
         "fix_base": bool(cfg.asset.fix_base_link),
@@ -368,6 +385,7 @@ def load_env(run_path: str = None, weights_path: str = None, sim_device: str = '
             env=env,
             train_cfg_factory=task_spec.train_cfg_factory,
             device=sim_device,
+            policy_mode=policy_mode,
         )
     elif run_path is not None:
         # Load policy

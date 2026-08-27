@@ -21,6 +21,10 @@ class CommandState {
   TeleopEvent update(const GamepadState& pad, double dt);
   void reset();
   void advance_clock(double dt);
+  // Deterministic diagnostic input. Values still pass through the exported
+  // command limits, but do not depend on gamepad quantization or deadzones.
+  void set_scripted_value(int index, float value);
+  void set_scripted_force_mode(bool enabled);
   const std::vector<float>& values() const { return commands_; }
   const std::array<float, 4>& clock() const { return clock_; }
   bool force_mode() const { return commands_[22] >= 0.5f; }

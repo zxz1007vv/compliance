@@ -384,6 +384,48 @@ python scripts/play.py \
 
 也可以用 `--output /path/to/result.json` 指定评估 JSON 路径。
 
+### 7.6 Teacher / student A/B 评估
+
+同一个训练 checkpoint 内包含共享 actor 和 adaptation module：
+
+- `student`（默认）用观测历史经过 adaptation module 估计 16 维 privileged latent，
+  与导出的 TorchScript/MuJoCo 策略一致；
+- `teacher` 在 Isaac Gym 中直接把真实 privileged observation 输入同一个 actor，
+  用于判断误差来自 adaptation/反馈瓶颈，还是 actor、奖励和任务本身。
+
+使用相同 run、checkpoint、seed 和诊断参数分别运行：
+
+```bash
+python scripts/play.py \
+  --run-dir logs/zgwsarm_compliance/<run> --checkpoint 6500 \
+  --diagnostic-scenario force --control-mode force \
+  --force-amplitude 10 --policy-mode student --headless
+
+python scripts/play.py \
+  --run-dir logs/zgwsarm_compliance/<run> --checkpoint 6500 \
+  --diagnostic-scenario force --control-mode force \
+  --force-amplitude 10 --policy-mode teacher --headless
+```
+
+Teacher 只用于 Gym 诊断，不能导出到 MuJoCo，因为部署环境不存在这些真实 privileged
+量。Teacher 显著优于 student 表明 adaptation/可观测性是主要瓶颈；两者都差则应优先检查
+actor、奖励、命令课程和虚拟力场设计。两次运行会把 `policy_mode` 写入评估 JSON。
+
+纯 yaw 的确定性 Gym 检查可以分别运行：
+
+```bash
+python scripts/play.py --run-dir logs/zgwsarm_compliance/<run> --checkpoint 6500 \
+  --diagnostic-scenario velocity_arm_fixed --diagnostic-lin-vel-x 0 \
+  --diagnostic-ang-vel-yaw 0.2 --policy-mode student --headless
+
+python scripts/play.py --run-dir logs/zgwsarm_compliance/<run> --checkpoint 6500 \
+  --diagnostic-scenario velocity_arm_fixed --diagnostic-lin-vel-x 0 \
+  --diagnostic-ang-vel-yaw -0.2 --policy-mode student --headless
+```
+
+MuJoCo 中更适合使用 `mujoco/scripts/run_diagnostic.sh --scenario yaw`，它会在一次运行中
+自动完成正负命令并汇总左右轮符号和 `wheel_yaw_hat`；详见 `mujoco/README.md`。
+
 
 
 ## 8. 日志、checkpoint 与 policy
@@ -478,7 +520,7 @@ ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz �
 
 ZGWSARM 的 base velocity 不再进入多维 bin grid，而使用“先采 locomotion mode、再在
 激活维度内连续采样”的课程。当前 mixture 为 `stand/pure_x/pure_yaw/x_yaw =
-0.2/0.3/0.4/0.1`；初始范围是 `vx=±0.5 m/s`、`vy=0`、`yaw_rate=±0.3 rad/s`，最终
+0.2/0.3/0.4/0.1`；初始范围是 `vx=±0.5 m/s`、`vy=0`、`yaw_rate=±0.2 rad/s`，最终
 limit 为 `±1.0/0/±1.5`。`vx/vy/yaw` 根据各自 pure-mode MAE 独立按 `0.1` 扩张，
 不会因其他方向成功而联动；关闭 `command_curriculum` 时直接使用 limit，但仍保留结构化
 mode mixture。运行时范围和统计量会随 checkpoint 保存、续训时恢复。
@@ -488,6 +530,10 @@ mode mixture。运行时范围和统计量会随 checkpoint 保存、续训时�
 轮关节速度估算 `vx_hat/yaw_hat`，只在对应 command 维度激活时生效。横向滑动惩罚按 mode
 加权：pure-x 保持完整约束，pure-yaw 降低，预留的 lateral modes 默认关闭该约束。XYZ
 力目标仍不经过速度课程，而是按 `ee_force_x/y/z` 独立采样并渐变施加。
+`gripper_forced_prob=0.8` 表示 80% 的力控片段保留锚点弹簧；在这些
+forced 片段中，`force_zero_command_prob=0.6` 会将 60% 的 XYZ 目标力设为
+0 N，但不删除锚点。这些样本专门训练策略在弹簧力场存在时回到零力
+平衡点，与 freed 片段的“移除力场后自然为零”不同。
 
 ZGWSARM 原地 Position/Force/Binary 测试：
 

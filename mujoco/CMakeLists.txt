@@ -155,6 +155,9 @@ if(MUJOCO_BUILD_SIMULATOR)
 
     add_executable(mujoco_sim apps/mujoco_sim.cpp)
     target_link_libraries(mujoco_sim PRIVATE mujoco_simulator)
+
+    add_executable(mujoco_diagnostic apps/diagnostic.cpp)
+    target_link_libraries(mujoco_diagnostic PRIVATE mujoco_simulator)
   else()
     message(WARNING "MuJoCo was not found: mujoco_sim is disabled; core/parity tests remain available")
   endif()

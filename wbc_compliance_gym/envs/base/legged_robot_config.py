@@ -419,6 +419,10 @@ class Cfg(PrefixProto, cli=False):
         gripper_force_kp = 700.0
         gripper_force_kd = 6.0
         gripper_forced_prob = 0.5
+        # Probability that an anchored force-control segment explicitly uses
+        # a zero XYZ force target.  The anchor remains active, unlike a freed
+        # segment, so the policy must regulate the spring force back to zero.
+        force_zero_command_prob = 0.0
         gripper_forced_rand_interval_s = 2.0
         gripper_motion_duration = 0.3
         

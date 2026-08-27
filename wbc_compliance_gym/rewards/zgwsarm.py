@@ -17,6 +17,7 @@ from wbc_compliance_gym.commands import (
     INDEX_EE_POS_YAW_CMD,
     LOCOMOTION_MODE_ACTIVE_AXES,
     LOCOMOTION_MODE_NAMES,
+    LOCOMOTION_MODE_TO_ID,
 )
 
 from .common import WholeBodyComplianceRewards
@@ -123,9 +124,19 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         )
         return torch.square(error)
 
-    def _translation_stationary_mask(self):
-        translation = torch.linalg.norm(self.env.commands[:, :2], dim=1)
-        return translation < self.env.cfg.rewards.stand_still_command_threshold
+    def _stand_command_mask(self):
+        """Select true stand commands without suppressing pure-yaw leg motion."""
+        if hasattr(self.env, "locomotion_mode_ids"):
+            return (
+                self.env.locomotion_mode_ids
+                == LOCOMOTION_MODE_TO_ID["stand"]
+            )
+
+        planar_command = torch.linalg.norm(self.env.commands[:, :3], dim=1)
+        return (
+            planar_command
+            < self.env.cfg.rewards.stand_still_command_threshold
+        )
 
     def _reward_stance_posture(self):
         """Regularize leg posture only for the zero-velocity command slice."""
@@ -136,7 +147,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             ),
             dim=1,
         )
-        return posture_error * self._translation_stationary_mask().float()
+        return posture_error * self._stand_command_mask().float()
 
     def _reward_stance_symmetry(self):
         """Prevent one-sided collapse while allowing symmetric crouching."""
@@ -170,7 +181,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         symmetry_error = torch.mean(
             torch.square(torch.stack(errors, dim=1) / scale), dim=1
         )
-        return symmetry_error * self._translation_stationary_mask().float()
+        return symmetry_error * self._stand_command_mask().float()
 
     def _locomotion_axis_mask(self, axis):
         if hasattr(self.env, "locomotion_mode_ids"):

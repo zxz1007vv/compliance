@@ -16,8 +16,8 @@ from wbc_compliance_gym.utils.config_utils import ConfigNode
 
 ZGWSARM_REWARD_SCALES = {
     # 任务跟踪
-    "tracking_lin_vel": 1.0,
-    "tracking_ang_vel_yaw": 2.0,
+    "tracking_lin_vel": 2.0,
+    "tracking_ang_vel_yaw": 3.0,
     "manip_pos_tracking": 3.0,
     "manip_ori_tracking": 2.5,
     "ee_force_x": 3.0,
@@ -27,7 +27,7 @@ ZGWSARM_REWARD_SCALES = {
     # 底盘稳定
     "survival": 1.0,
     "orientation": -5.0,
-    "base_height": -5.0,     #-5.0
+    "base_height": -10.0,     #-5.0
     "ang_vel_xy": -0.05,
     "lin_vel_z": -4.0,
     # Only active for near-zero base commands, so locomotion remains free.
@@ -545,7 +545,7 @@ def _configure_zgwsarm_training(cfg):
     cfg.algorithm.num_mini_batches = 4
 
     # Run identity. ``--run-name`` overrides training_name for one launch.
-    cfg.run.training_name = "826v1_lateral_slip_off"
+    cfg.run.training_name = "827v2"
     cfg.run.experiment_group = "wbc"
     cfg.run.experiment_job_type = "release"
 
@@ -729,13 +729,13 @@ def configure_zgwsarm_compliance_play(
     cfg.terrain.teleport_robots = False
     cfg.terrain.mesh_type = "plane"  # plane requires teleport_robots = False
 
-    cfg.commands.lin_vel_x = [1.0, 1.0]
-    cfg.commands.limit_vel_x = [1.0, 1.0]
+    cfg.commands.lin_vel_x = [0.0, 0.0]
+    cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [0.0, 0.00]
-    cfg.commands.limit_vel_yaw = [0.0, 0.0]
-    cfg.commands.planar_command_mixture = {"pure_x": 1.0}
+    cfg.commands.ang_vel_yaw = [0.5, 0.50]
+    cfg.commands.limit_vel_yaw = [0.5, 0.5]
+    cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
     # Task-owned play defaults. Edit this block to change normal play behavior.
     cfg.commands.hybrid_mode = "position"
     cfg.commands.ee_sphe_radius = [0.40, 0.40]

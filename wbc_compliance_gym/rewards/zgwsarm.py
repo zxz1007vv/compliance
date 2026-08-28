@@ -138,6 +138,23 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             < self.env.cfg.rewards.stand_still_command_threshold
         )
 
+    def _pure_yaw_command_mask(self):
+        """Select yaw-only commands without affecting combined locomotion."""
+        if hasattr(self.env, "locomotion_mode_ids"):
+            return (
+                self.env.locomotion_mode_ids
+                == LOCOMOTION_MODE_TO_ID["pure_yaw"]
+            )
+
+        threshold = float(
+            self.env.cfg.rewards.wheel_command_active_threshold
+        )
+        return (
+            (torch.abs(self.env.commands[:, 0]) <= threshold)
+            & (torch.abs(self.env.commands[:, 1]) <= threshold)
+            & (torch.abs(self.env.commands[:, 2]) > threshold)
+        )
+
     def _reward_stance_posture(self):
         """Regularize leg posture only for the zero-velocity command slice."""
         posture_error = torch.mean(
@@ -148,6 +165,35 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             dim=1,
         )
         return posture_error * self._stand_command_mask().float()
+
+    def _reward_yaw_leg_posture(self):
+        """Allow small yaw steering motions but reject large leg distortion."""
+        allowed = torch.as_tensor(
+            self.env.cfg.rewards.yaw_leg_posture_allowed_deviation,
+            dtype=self.env.dof_pos.dtype,
+            device=self.env.dof_pos.device,
+        )
+        deviation = torch.abs(
+            self.env.dof_pos[:, self._legs]
+            - self.env.default_dof_pos[:, self._legs]
+        )
+        excess = (deviation - allowed).clip(min=0.0)
+        scale = float(self.env.cfg.rewards.yaw_leg_posture_scale)
+        posture_error = torch.mean(torch.square(excess / scale), dim=1)
+        return posture_error * self._pure_yaw_command_mask().float()
+
+    def _reward_yaw_height_floor(self):
+        """Prevent pure-yaw tracking from exploiting a deep body crouch."""
+        minimum_height = (
+            float(self.env.cfg.rewards.base_height_target)
+            - float(self.env.cfg.rewards.yaw_height_allowed_drop)
+        )
+        height_deficit = (
+            minimum_height - self.env.base_height_above_terrain()
+        ).clip(min=0.0)
+        scale = float(self.env.cfg.rewards.yaw_height_scale)
+        height_error = torch.square(height_deficit / scale)
+        return height_error * self._pure_yaw_command_mask().float()
 
     def _reward_stance_symmetry(self):
         """Prevent one-sided collapse while allowing symmetric crouching."""
@@ -393,12 +439,12 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         return torch.sum(position_excess + target_excess, dim=1)
 
     def _reward_dof_vel_leg(self):
-        return torch.sum(torch.square(self.env.dof_vel[:, self._motion]), dim=1)
+        return torch.sum(torch.square(self.env.dof_vel[:, self._legs]), dim=1)
 
     def _reward_dof_acc_leg(self):
         return torch.sum(
             torch.square(
-                (self.env.last_dof_vel[:, self._motion] - self.env.dof_vel[:, self._motion])
+                (self.env.last_dof_vel[:, self._legs] - self.env.dof_vel[:, self._legs])
                 / self.env.dt
             ),
             dim=1,

@@ -1,5 +1,5 @@
 {
-    "cmake.sourceDirectory": "/home/user/PROJECT/compliance/resources/robots/b1_z1",
+    "cmake.sourceDirectory": "/home/ubuntu/zskj/learning-compliance/mujoco",
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

@@ -34,6 +34,10 @@ ZGWSARM_REWARD_SCALES = {
     "stance_posture": -1.0,  #-0.5
     # Reject one-sided arm-load collapse while allowing symmetric crouching.
     "stance_symmetry": -2.0,
+    # Pure yaw may use small coordinated leg motions, but not a saturated
+    # crouched posture as a substitute for wheel-driven turning.
+    "yaw_leg_posture": -1.0,
+    "yaw_height_floor": -1.5,
 
     # 轮足支撑
     "wheel_contact_consistency": -2.0,
@@ -44,7 +48,7 @@ ZGWSARM_REWARD_SCALES = {
     # penalty, add it here with a negative non-zero weight (for example -0.5).
     "wheel_rolling_consistency": -0.5,
     "wheel_v_tracking": 0.5,
-    "wheel_yaw_tracking": 0.5,
+    "wheel_yaw_tracking": 1.0,
 
     # 动作平滑与能耗
     "action_magnitude": -0.05,
@@ -355,9 +359,11 @@ def _configure_zgwsarm_domain_randomization(cfg):
 
     cfg.domain_rand.randomize_base_mass = False
     cfg.domain_rand.added_mass_range = [-1.0, 3.0]
-    cfg.domain_rand.randomize_com_displacement = True
+    # Mechanism-learning phase: first learn wheel-driven yaw without large
+    # inertial disturbances. Restore these randomizations for robustification.
+    cfg.domain_rand.randomize_com_displacement = False
     cfg.domain_rand.com_displacement_range = [-0.05, 0.05]
-    cfg.domain_rand.randomize_gravity = True
+    cfg.domain_rand.randomize_gravity = False
     cfg.domain_rand.gravity_range = [-0.5, 0.5]
     cfg.domain_rand.gravity_rand_interval_s = 8.0
     cfg.domain_rand.gravity_impulse_duration = 0.99
@@ -370,8 +376,8 @@ def _configure_zgwsarm_domain_randomization(cfg):
     cfg.domain_rand.randomize_Kd_factor = True
 
     cfg.domain_rand.randomize_tile_roughness = True
-    cfg.domain_rand.tile_roughness_range = [0.0, 0.08]
-    cfg.domain_rand.push_robots = True
+    cfg.domain_rand.tile_roughness_range = [0.0, 0.01]
+    cfg.domain_rand.push_robots = False
     cfg.domain_rand.max_push_vel_xy = 0.8
 
     cfg.domain_rand.randomize_gripper_force_gains = True
@@ -483,10 +489,16 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.stance_lateral_symmetry_tolerance = 0.04
     cfg.rewards.stance_height_symmetry_tolerance = 0.04  #左右支撑高度相差容忍高度
     cfg.rewards.stance_symmetry_scale = 0.10
+    # Per-leg order is ABAD, HIP, KNEE. ABAD keeps the largest dead zone so
+    # the four legs can make the desired small lateral steering motion.
+    cfg.rewards.yaw_leg_posture_allowed_deviation = [0.18, 0.12, 0.15] * 4
+    cfg.rewards.yaw_leg_posture_scale = 0.20
+    cfg.rewards.yaw_height_allowed_drop = 0.03
+    cfg.rewards.yaw_height_scale = 0.04
     cfg.rewards.wheel_lateral_slip_scale = 0.25
     cfg.rewards.wheel_rolling_error_scale = 0.25
     cfg.rewards.wheel_v_tracking_scale = 0.40
-    cfg.rewards.wheel_yaw_tracking_scale = 0.50
+    cfg.rewards.wheel_yaw_tracking_scale = 0.15
     cfg.rewards.wheel_command_active_threshold = 0.05
     cfg.rewards.wheel_lateral_slip_mode_weights = {
         "stand": 1.0,
@@ -625,6 +637,8 @@ def _validate_zgwsarm_config(cfg):
         "stance_lateral_symmetry_tolerance",
         "stance_height_symmetry_tolerance",
         "stance_symmetry_scale",
+        "yaw_leg_posture_scale",
+        "yaw_height_scale",
         "wheel_lateral_slip_scale",
         "wheel_rolling_error_scale",
         "wheel_v_tracking_scale",
@@ -633,6 +647,17 @@ def _validate_zgwsarm_config(cfg):
     ):
         if getattr(cfg.rewards, name) <= 0.0:
             raise ValueError(f"ZGWSARM rewards.{name} must be positive")
+    allowed_deviation = cfg.rewards.yaw_leg_posture_allowed_deviation
+    if len(allowed_deviation) != len(cfg.asset.leg_dof_names):
+        raise ValueError(
+            "yaw_leg_posture_allowed_deviation must define every leg DOF"
+        )
+    if any(float(value) < 0.0 for value in allowed_deviation):
+        raise ValueError(
+            "yaw_leg_posture_allowed_deviation must be non-negative"
+        )
+    if cfg.rewards.yaw_height_allowed_drop < 0.0:
+        raise ValueError("yaw_height_allowed_drop must be non-negative")
     lateral_mode_weights = cfg.rewards.wheel_lateral_slip_mode_weights
     expected_modes = {
         "stand", "pure_x", "pure_y", "pure_yaw", "xy", "x_yaw", "y_yaw", "full"

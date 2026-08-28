@@ -445,6 +445,25 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.8, cfg.domain_rand.gripper_forced_prob)
         self.assertEqual(0.6, cfg.domain_rand.force_zero_command_prob)
 
+    def test_yaw_mechanism_learning_config(self):
+        cfg = ZGWSARMComplianceCfg()
+
+        self.assertEqual(1.0, cfg.reward_scales.wheel_yaw_tracking)
+        self.assertEqual(-1.0, cfg.reward_scales.yaw_leg_posture)
+        self.assertEqual(-1.5, cfg.reward_scales.yaw_height_floor)
+        self.assertEqual(0.15, cfg.rewards.wheel_yaw_tracking_scale)
+        self.assertEqual(
+            [0.18, 0.12, 0.15] * 4,
+            cfg.rewards.yaw_leg_posture_allowed_deviation,
+        )
+        self.assertEqual(0.20, cfg.rewards.yaw_leg_posture_scale)
+        self.assertEqual(0.03, cfg.rewards.yaw_height_allowed_drop)
+        self.assertEqual(0.04, cfg.rewards.yaw_height_scale)
+        self.assertFalse(cfg.domain_rand.randomize_com_displacement)
+        self.assertFalse(cfg.domain_rand.randomize_gravity)
+        self.assertFalse(cfg.domain_rand.push_robots)
+        self.assertEqual([0.0, 0.01], cfg.domain_rand.tile_roughness_range)
+
     def test_initial_velocity_curriculum_samples_stay_inside_active_ranges(self):
         cfg = ZGWSARMComplianceCfg()
         _, curricula = build_command_curricula(cfg.commands)
@@ -967,6 +986,79 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
         reward = ZGWSARMRewards(env)._reward_stance_posture()
         torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]))
+
+    def test_yaw_leg_posture_has_joint_deadzone_and_pure_yaw_mask(self):
+        allowed = torch.tensor([0.18, 0.12, 0.15] * 4)
+        positions = torch.stack((allowed, allowed, allowed))
+        positions[1:, 0] += 0.20
+        env = SimpleNamespace(
+            commands=torch.tensor(
+                [[0.0, 0.0, 0.2], [0.0, 0.0, 0.2], [0.2, 0.0, 0.2]]
+            ),
+            locomotion_mode_ids=torch.tensor(
+                [
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
+                ]
+            ),
+            dof_pos=positions,
+            default_dof_pos=torch.zeros(3, 12),
+            leg_dof_indices=torch.arange(12),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(
+                    yaw_leg_posture_allowed_deviation=allowed.tolist(),
+                    yaw_leg_posture_scale=0.20,
+                )
+            ),
+        )
+
+        reward = ZGWSARMRewards(env)._reward_yaw_leg_posture()
+        torch.testing.assert_close(
+            reward, torch.tensor([0.0, 1.0 / 12.0, 0.0])
+        )
+
+    def test_yaw_height_floor_penalizes_only_low_pure_yaw_base(self):
+        env = SimpleNamespace(
+            commands=torch.tensor(
+                [[0.0, 0.0, 0.2], [0.0, 0.0, 0.2], [0.2, 0.0, 0.2]]
+            ),
+            locomotion_mode_ids=torch.tensor(
+                [
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
+                ]
+            ),
+            base_height_above_terrain=lambda: torch.tensor([0.51, 0.47, 0.47]),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(
+                    base_height_target=0.54,
+                    yaw_height_allowed_drop=0.03,
+                    yaw_height_scale=0.04,
+                )
+            ),
+        )
+
+        reward = ZGWSARMRewards(env)._reward_yaw_height_floor()
+        torch.testing.assert_close(reward, torch.tensor([0.0, 1.0, 0.0]))
+
+    def test_leg_velocity_regularizers_exclude_wheel_dofs(self):
+        env = SimpleNamespace(
+            leg_dof_indices=torch.tensor([0, 2]),
+            motion_dof_indices=torch.arange(4),
+            dof_vel=torch.tensor([[1.0, 100.0, 2.0, 100.0]]),
+            last_dof_vel=torch.zeros(1, 4),
+            dt=1.0,
+        )
+        rewards = ZGWSARMRewards(env)
+
+        torch.testing.assert_close(
+            rewards._reward_dof_vel_leg(), torch.tensor([5.0])
+        )
+        torch.testing.assert_close(
+            rewards._reward_dof_acc_leg(), torch.tensor([5.0])
+        )
 
     def test_continuous_velocity_sampler_produces_structured_modes(self):
         cfg = ZGWSARMComplianceCfg()

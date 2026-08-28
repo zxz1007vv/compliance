@@ -2,6 +2,7 @@
 
 from wbc_compliance_gym.commands import (
     force_command_ranges,
+    resolve_yaw_gait_phase_slots,
     set_force_command_ranges,
 )
 from wbc_compliance_gym.envs.base.compliance_task_config import (
@@ -36,8 +37,13 @@ ZGWSARM_REWARD_SCALES = {
     "stance_symmetry": -2.0,
     # Pure yaw may use small coordinated leg motions, but not a saturated
     # crouched posture as a substitute for wheel-driven turning.
-    "yaw_leg_posture": -1.0,
+    "yaw_leg_posture": -1.5,
     "yaw_height_floor": -1.5,
+
+    # Pure-yaw four-beat crawl: one wheel repositions while three support.
+    "yaw_gait_support": 1.0,
+    "yaw_foothold_tracking": 1.5,
+    "yaw_swing_tangential_velocity": 0.3,
 
     # 轮足支撑
     "wheel_contact_consistency": -2.0,
@@ -48,7 +54,7 @@ ZGWSARM_REWARD_SCALES = {
     # penalty, add it here with a negative non-zero weight (for example -0.5).
     "wheel_rolling_consistency": -0.5,
     "wheel_v_tracking": 0.5,
-    "wheel_yaw_tracking": 1.0,
+    "wheel_yaw_tracking": 2.0,
 
     # 动作平滑与能耗
     "action_magnitude": -0.05,
@@ -121,7 +127,8 @@ def _configure_zgwsarm_environment(cfg):
 def _configure_zgwsarm_terrain(cfg):
     cfg.terrain.border_size = 0.0 # 整张地形网格外围的额外边界宽度，单位 m；
     # 地形实现类型：使用由方块地形拼接并转换得到的三角网格。
-    cfg.terrain.mesh_type = "boxes_tm"
+    # Phase A yaw-mechanism pretraining uses a deterministic flat surface.
+    cfg.terrain.mesh_type = "plane"
     cfg.terrain.num_cols = 20
     cfg.terrain.num_rows = 20
     cfg.terrain.terrain_width = 5.0
@@ -217,7 +224,7 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.limit_vel_x = [-1.0, 1.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [-0.2, 0.2]
+    cfg.commands.ang_vel_yaw = [-0.3, 0.3]
     cfg.commands.limit_vel_yaw = [-1.5, 1.5]
     cfg.commands.vx_curriculum_step = 0.1
     cfg.commands.vy_curriculum_step = 0.1
@@ -231,13 +238,16 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.velocity_curriculum_required_successes = 2
     cfg.commands.velocity_curriculum_ema_alpha = 0.5
     cfg.commands.velocity_curriculum_active_threshold = 0.05
+    # Mechanism-learning phase: train only unambiguous yaw commands and omit
+    # the near-zero band where a stationary policy is already competitive.
+    cfg.commands.min_active_command_magnitude = [0.0, 0.0, 0.15] #[vx,vy,yaw]命令最小值，默认为0
     cfg.commands.planar_command_mixture = {
-        "stand": 0.2,
-        "pure_x": 0.3,
+        "stand": 0.1,
+        "pure_x": 0.0,
         "pure_y": 0.0,
-        "pure_yaw": 0.4,
+        "pure_yaw": 0.9,
         "xy": 0.0,
-        "x_yaw": 0.1,
+        "x_yaw": 0.0,
         "y_yaw": 0.0,
         "full": 0.0,
     }
@@ -298,7 +308,7 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.gaitwise_curricula = False
     cfg.commands.balance_gait_distribution = False
 
-    cfg.commands.hybrid_mode = "binary"
+    cfg.commands.hybrid_mode = "position"
     cfg.commands.force_control = False
     cfg.commands.control_only_z1 = False
     cfg.commands.interpolate_ee_cmds = True
@@ -322,6 +332,18 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.limit_ee_sphe_pitch = list(ZGWSARM_EE_PITCH_RANGE)
     cfg.commands.ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
     cfg.commands.limit_ee_sphe_yaw = list(ZGWSARM_EE_YAW_RANGE)
+    # Phase A holds the arm at its nominal pose and removes force-task motion.
+    nominal_radius, nominal_pitch, nominal_yaw = (
+        cfg.commands.default_ee_position_spherical
+    )
+    cfg.commands.ee_sphe_radius = [nominal_radius, nominal_radius]
+    cfg.commands.limit_ee_sphe_radius = [nominal_radius, nominal_radius]
+    cfg.commands.ee_sphe_pitch = [nominal_pitch, nominal_pitch]
+    cfg.commands.limit_ee_sphe_pitch = [nominal_pitch, nominal_pitch]
+    cfg.commands.ee_sphe_yaw = [nominal_yaw, nominal_yaw]
+    cfg.commands.limit_ee_sphe_yaw = [nominal_yaw, nominal_yaw]
+    cfg.init_state.arm_reset_position_range = [0.0, 0.0]
+    set_force_command_ranges(cfg.commands, [0.0, 0.0])
     # All corners of the configured spherical box remain above this height at
     # the nominal 0.54 m base height; the shared B1+Z1 default remains 0.05 m.
     cfg.commands.ee_min_world_height = 0.15
@@ -368,15 +390,15 @@ def _configure_zgwsarm_domain_randomization(cfg):
     cfg.domain_rand.gravity_rand_interval_s = 8.0
     cfg.domain_rand.gravity_impulse_duration = 0.99
 
-    cfg.domain_rand.randomize_motor_strength = True
+    cfg.domain_rand.randomize_motor_strength = False
     cfg.domain_rand.motor_strength_range = [0.9, 1.1]
     cfg.domain_rand.randomize_motor_offset = False
     cfg.domain_rand.motor_offset_range = [-0.02, 0.02]
     cfg.domain_rand.randomize_Kp_factor = False
-    cfg.domain_rand.randomize_Kd_factor = True
+    cfg.domain_rand.randomize_Kd_factor = False
 
-    cfg.domain_rand.randomize_tile_roughness = True
-    cfg.domain_rand.tile_roughness_range = [0.0, 0.01]
+    cfg.domain_rand.randomize_tile_roughness = False
+    cfg.domain_rand.tile_roughness_range = [0.0, 0.0]
     cfg.domain_rand.push_robots = False
     cfg.domain_rand.max_push_vel_xy = 0.8
 
@@ -385,6 +407,8 @@ def _configure_zgwsarm_domain_randomization(cfg):
     cfg.domain_rand.gripper_force_kd_range = [3.0, 10.0]
     # 每次进入新的末端受力片段时，启用虚拟力场的概率；0.8 即约 80% 的
     # 片段由锚点弹簧施力，其余约 20% 为 freed（无锚点约束）片段。
+    # Phase A uses position mode, so force anchors remain inactive during
+    # training while the normal play/Phase-C force path stays available.
     cfg.domain_rand.gripper_forced_prob = 0.8
     # 在上述 forced 片段中，有 60% 显式使用 XYZ=0 N 的目标力。此时
     # 锚点弹簧仍然存在，用于训练策略将末端维持在零力平衡点；
@@ -473,6 +497,8 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.force_command_frame = "yaw"
     # Geodesic quaternion error width in radians for the calibrated tool frame.
     cfg.rewards.manip_ori_tracking_sigma = 0.5
+    # Half-width of the task-specific Cauchy yaw tracking reward.
+    cfg.rewards.tracking_sigma_v_yaw = 0.10
 
     # Wheel-specific normalized reward parameters.  A 20 N minimum is far
     # below the nominal ~116 N/wheel static load, so brief dynamics are allowed
@@ -491,10 +517,18 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.stance_symmetry_scale = 0.10
     # Per-leg order is ABAD, HIP, KNEE. ABAD keeps the largest dead zone so
     # the four legs can make the desired small lateral steering motion.
-    cfg.rewards.yaw_leg_posture_allowed_deviation = [0.18, 0.12, 0.15] * 4
-    cfg.rewards.yaw_leg_posture_scale = 0.20
+    cfg.rewards.yaw_leg_posture_allowed_deviation = [0.22, 0.06, 0.08] * 4
+    cfg.rewards.yaw_leg_posture_scale = 0.10
     cfg.rewards.yaw_height_allowed_drop = 0.03
     cfg.rewards.yaw_height_scale = 0.04
+    cfg.rewards.yaw_gait_frequency = 1.2
+    cfg.rewards.yaw_gait_step_length = 0.05
+    cfg.rewards.yaw_gait_foothold_sigma = 0.04
+    cfg.rewards.yaw_gait_stance_min_force = 30.0
+    cfg.rewards.yaw_gait_stance_force_scale = 8.0
+    cfg.rewards.yaw_gait_swing_force_scale = 10.0
+    cfg.rewards.yaw_gait_tangential_velocity_scale = 0.20
+    cfg.rewards.yaw_gait_phase_order = ["FAR", "RBL", "FBL", "RAR"]
     cfg.rewards.wheel_lateral_slip_scale = 0.25
     cfg.rewards.wheel_rolling_error_scale = 0.25
     cfg.rewards.wheel_v_tracking_scale = 0.40
@@ -557,7 +591,7 @@ def _configure_zgwsarm_training(cfg):
     cfg.algorithm.num_mini_batches = 4
 
     # Run identity. ``--run-name`` overrides training_name for one launch.
-    cfg.run.training_name = "827v2"
+    cfg.run.training_name = "828v2"
     cfg.run.experiment_group = "wbc"
     cfg.run.experiment_job_type = "release"
 
@@ -637,6 +671,14 @@ def _validate_zgwsarm_config(cfg):
         "stance_lateral_symmetry_tolerance",
         "stance_height_symmetry_tolerance",
         "stance_symmetry_scale",
+        "tracking_sigma_v_yaw",
+        "yaw_gait_frequency",
+        "yaw_gait_step_length",
+        "yaw_gait_foothold_sigma",
+        "yaw_gait_stance_min_force",
+        "yaw_gait_stance_force_scale",
+        "yaw_gait_swing_force_scale",
+        "yaw_gait_tangential_velocity_scale",
         "yaw_leg_posture_scale",
         "yaw_height_scale",
         "wheel_lateral_slip_scale",
@@ -658,6 +700,9 @@ def _validate_zgwsarm_config(cfg):
         )
     if cfg.rewards.yaw_height_allowed_drop < 0.0:
         raise ValueError("yaw_height_allowed_drop must be non-negative")
+    resolve_yaw_gait_phase_slots(
+        cfg.asset.wheel_dof_names, cfg.rewards.yaw_gait_phase_order
+    )
     lateral_mode_weights = cfg.rewards.wheel_lateral_slip_mode_weights
     expected_modes = {
         "stand", "pure_x", "pure_y", "pure_yaw", "xy", "x_yaw", "y_yaw", "full"
@@ -758,8 +803,8 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [0.5, 0.50]
-    cfg.commands.limit_vel_yaw = [0.5, 0.5]
+    cfg.commands.ang_vel_yaw = [1.0, 1.00]
+    cfg.commands.limit_vel_yaw = [1.0, 1.0]
     cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
     # Task-owned play defaults. Edit this block to change normal play behavior.
     cfg.commands.hybrid_mode = "position"

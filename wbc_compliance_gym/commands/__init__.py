@@ -44,6 +44,7 @@ from .velocity_curriculum import (
     LOCOMOTION_MODE_NAMES,
     LOCOMOTION_MODE_TO_ID,
     ContinuousVelocityCurriculum,
+    resolve_yaw_gait_phase_slots,
 )
 
 __all__ = [name for name in globals() if name.startswith("INDEX_")] + [
@@ -66,4 +67,5 @@ __all__ = [name for name in globals() if name.startswith("INDEX_")] + [
     "LOCOMOTION_MODE_NAMES",
     "LOCOMOTION_MODE_TO_ID",
     "ContinuousVelocityCurriculum",
+    "resolve_yaw_gait_phase_slots",
 ]

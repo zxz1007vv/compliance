@@ -519,21 +519,19 @@ ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz �
 轮角不进入策略关节位置观测，真实轮速仍保留。
 
 ZGWSARM 的 base velocity 不再进入多维 bin grid，而使用“先采 locomotion mode、再在
-激活维度内连续采样”的课程。当前 mixture 为 `stand/pure_x/pure_yaw/x_yaw =
-0.2/0.3/0.4/0.1`；初始范围是 `vx=±0.5 m/s`、`vy=0`、`yaw_rate=±0.2 rad/s`，最终
-limit 为 `±1.0/0/±1.5`。`vx/vy/yaw` 根据各自 pure-mode MAE 独立按 `0.1` 扩张，
-不会因其他方向成功而联动；关闭 `command_curriculum` 时直接使用 limit，但仍保留结构化
-mode mixture。运行时范围和统计量会随 checkpoint 保存、续训时恢复。
+激活维度内连续采样”的课程。当前 Phase A 使用 `stand/pure_yaw=0.1/0.9`，yaw 初始范围
+为 `±0.3 rad/s`，并排除 `|yaw_rate|<0.15 rad/s` 的近零命令；最终 limit 为
+`±1.5 rad/s`。yaw 根据 pure-mode MAE 独立按 `0.1` 扩张，运行时状态随 checkpoint 保存。
 
-纯 yaw 时 stance posture/symmetry 仍开启，使腿保持正常支撑并让左右轮差速承担转向。
-轮速 shaping 分成 `wheel_v_tracking` 与 `wheel_yaw_tracking`，分别由真实轮位姿、轮半径和
-轮关节速度估算 `vx_hat/yaw_hat`，只在对应 command 维度激活时生效。横向滑动惩罚按 mode
-加权：pure-x 保持完整约束，pure-yaw 降低，预留的 lateral modes 默认关闭该约束。XYZ
-力目标仍不经过速度课程，而是按 `ee_force_x/y/z` 独立采样并渐变施加。
-`gripper_forced_prob=0.8` 表示 80% 的力控片段保留锚点弹簧；在这些
-forced 片段中，`force_zero_command_prob=0.6` 会将 60% 的 XYZ 目标力设为
-0 N，但不删除锚点。这些样本专门训练策略在弹簧力场存在时回到零力
-平衡点，与 freed 片段的“移除力场后自然为零”不同。
+pure-yaw 使用与 `ClockSensor` 同源的 1.2 Hz 四拍 crawl：
+`FAR → RBL → FBL → RAR`。每拍由 `yaw_gait_support` 引导一足卸载、三足承重，
+`yaw_foothold_tracking` 引导 swing 足沿 yaw 切向移动 5 cm，并用有界切向速度 reward
+提供进度信号。pure-yaw 下旧的四轮接触和逐轮最低载荷项关闭，其他 mode 保持原逻辑；
+机身与轮速 yaw tracking 继续提供最终任务目标。
+
+Phase A 使用平地、固定机械臂 nominal pose、零 force command，并关闭 roughness、push、
+COM、gravity 和 motor randomization。形成稳定转向机构后，再从该 checkpoint 进入
+Phase B/C，逐步恢复直线/弧线命令、机械臂 compliance 和域随机化。
 
 ZGWSARM 原地 Position/Force/Binary 测试：
 

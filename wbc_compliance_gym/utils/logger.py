@@ -137,6 +137,17 @@ class Logger:
             episode["mean_right_wheel_speed"] = torch.mean(
                 wheel["mean_right_wheel_speed"]
             )
+            yaw_diagnostics = getattr(
+                self.env.reward_container, "get_yaw_gait_diagnostics", None
+            )
+            if yaw_diagnostics is not None:
+                yaw_metrics = yaw_diagnostics()
+                pure_yaw = yaw_metrics.pop("mask")
+                pure_yaw_count = pure_yaw.float().sum().clamp(min=1.0)
+                for name, values in yaw_metrics.items():
+                    episode[f"pure_yaw/{name}"] = torch.sum(
+                        values * pure_yaw.float()
+                    ) / pure_yaw_count
         # if self.env.cfg.env.send_timeouts:
         extras["time_outs"] = self.env.time_out_buf
         extras["train/episode"]["Number of env. terminated on time_outs"] = len(self.env.time_out_buf.nonzero(as_tuple=False).flatten())

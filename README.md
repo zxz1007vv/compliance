@@ -532,8 +532,14 @@ pure-yaw 使用与 `ClockSensor` 同源的 1.2 Hz 四拍 crawl：
 继续提供最终任务目标。
 
 Phase A 使用平地、固定机械臂 nominal pose、零 force command，并关闭 roughness、push、
-COM、gravity 和 motor randomization。形成稳定转向机构后，再从该 checkpoint 进入
-Phase B/C，逐步恢复直线/弧线命令、机械臂 compliance 和域随机化。
+COM、gravity 和 motor randomization。Phase B1 从 `828v2` 的 3500 代 checkpoint 新建
+`831_phase_b1_multimotion` run，不恢复旧 command curriculum；速度范围从
+`vx/yaw=±0.3` 重新开始，命令 mixture 为
+`stand/pure_x/pure_yaw/x_yaw=0.10/0.40/0.40/0.10`。该阶段继续固定机械臂并保持平地、
+零力命令和关闭主要随机化，训练 1500 次更新后，再评估是否进入机械臂位置任务与域随机化
+阶段。新 run 采用 warm-start 语义：加载3500代策略和优化器状态，但将
+Phase B1 自身的迭代数、累计步数和计时归零，checkpoint 编号为
+`000000/000500/001000/001500`。
 
 ZGWSARM 原地 Position/Force/Binary 测试：
 

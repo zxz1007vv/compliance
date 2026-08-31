@@ -146,7 +146,19 @@ class TaskRegistry:
                 resume_run_dir, getattr(args, "checkpoint", "latest")
             )
             runner.load(checkpoint_path)
-            print(f"Resuming training from: {checkpoint_path}")
+            if getattr(train_cfg.run, "reset_progress_on_load", False):
+                # Warm-start a new experiment from learned weights and
+                # optimizer state while giving the new phase its own progress
+                # axis and checkpoint numbering.
+                runner.current_learning_iteration = 0
+                runner.tot_timesteps = 0
+                runner.tot_time = 0.0
+                print(
+                    "Warm-starting a new run at iteration 0 from: "
+                    f"{checkpoint_path}"
+                )
+            else:
+                print(f"Resuming training from: {checkpoint_path}")
         return runner, train_cfg
 
 

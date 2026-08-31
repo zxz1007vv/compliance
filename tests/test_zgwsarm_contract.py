@@ -332,7 +332,7 @@ class ZGWSARMContractTests(unittest.TestCase):
 
         self.assertEqual([0.0, 0.0, 0.55], cfg.init_state.pos)
         self.assertEqual(
-            [-0.10, 0.10], cfg.init_state.arm_reset_position_range
+            [0.0, 0.0], cfg.init_state.arm_reset_position_range
         )
         self.assertEqual(0.54, cfg.rewards.base_height_target)
         self.assertEqual(0.54, cfg.commands.command_base_height)
@@ -383,33 +383,48 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.02, cfg.rewards.sigma_rew_neg)
         self.assertEqual("yaw", cfg.rewards.force_command_frame)
         self.assertEqual(0.5, cfg.rewards.manip_ori_tracking_sigma)
-        self.assertEqual(
-            list(ZGWSARM_EE_RADIUS_RANGE), cfg.commands.ee_sphe_radius
+        nominal_radius, nominal_pitch, nominal_yaw = (
+            cfg.commands.default_ee_position_spherical
         )
         self.assertEqual(
-            list(ZGWSARM_EE_PITCH_RANGE), cfg.commands.ee_sphe_pitch
+            [nominal_radius, nominal_radius], cfg.commands.ee_sphe_radius
         )
         self.assertEqual(
-            list(ZGWSARM_EE_YAW_RANGE), cfg.commands.ee_sphe_yaw
+            [nominal_pitch, nominal_pitch], cfg.commands.ee_sphe_pitch
+        )
+        self.assertEqual(
+            [nominal_yaw, nominal_yaw], cfg.commands.ee_sphe_yaw
         )
         self.assertEqual(0.15, cfg.commands.ee_min_world_height)
         for axis in "xyz":
             self.assertEqual(
-                list(ZGWSARM_FORCE_COMPONENT_RANGE),
+                [0.0, 0.0],
                 getattr(cfg.commands, f"ee_force_{axis}"),
             )
         self.assertEqual(-10.0, cfg.reward_scales.termination)
         self.assertEqual(-5.0, cfg.reward_scales.orientation)
-        self.assertEqual(-5.0, cfg.reward_scales.base_height)
+        self.assertEqual(-10.0, cfg.reward_scales.base_height)
         self.assertEqual(0.0, cfg.reward_scales.dof_pos)
-        self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_x)
-        self.assertEqual([0.0, 0.0], cfg.commands.limit_vel_x)
+        self.assertEqual([-0.3, 0.3], cfg.commands.lin_vel_x)
+        self.assertEqual([-1.0, 1.0], cfg.commands.limit_vel_x)
         self.assertEqual([0.0, 0.0], cfg.commands.lin_vel_y)
         self.assertEqual([0.0, 0.0], cfg.commands.limit_vel_y)
         self.assertEqual([-0.3, 0.3], cfg.commands.ang_vel_yaw)
-        self.assertEqual([-0.3, 0.3], cfg.commands.limit_vel_yaw)
-        self.assertFalse(cfg.commands.command_curriculum)
-        self.assertEqual({"pure_yaw": 1.0}, cfg.commands.planar_command_mixture)
+        self.assertEqual([-1.5, 1.5], cfg.commands.limit_vel_yaw)
+        self.assertTrue(cfg.commands.command_curriculum)
+        self.assertEqual(
+            {
+                "stand": 0.1,
+                "pure_x": 0.4,
+                "pure_y": 0.0,
+                "pure_yaw": 0.4,
+                "xy": 0.0,
+                "x_yaw": 0.1,
+                "y_yaw": 0.0,
+                "full": 0.0,
+            },
+            cfg.commands.planar_command_mixture,
+        )
         self.assertEqual(0.05, cfg.commands.yaw_success_threshold)
         self.assertEqual("continuous_modes", cfg.commands.velocity_sampling)
         self.assertFalse(hasattr(cfg.commands, "num_bins_vel_x"))
@@ -444,7 +459,7 @@ class ZGWSARMContractTests(unittest.TestCase):
             list(ZGWSARM_FORCE_COMPONENT_RANGE),
             cfg.domain_rand.max_push_force_xyz_gripper_freed,
         )
-        self.assertEqual("binary", cfg.commands.hybrid_mode)
+        self.assertEqual("position", cfg.commands.hybrid_mode)
         self.assertEqual(0.8, cfg.domain_rand.gripper_forced_prob)
         self.assertEqual(0.6, cfg.domain_rand.force_zero_command_prob)
 
@@ -469,22 +484,23 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.03, cfg.rewards.yaw_height_allowed_drop)
         self.assertEqual(0.04, cfg.rewards.yaw_height_scale)
         self.assertEqual(
-            [0.0, 0.0, 0.15],
+            [0.15, 0.0, 0.15],
             cfg.commands.min_active_command_magnitude,
         )
         self.assertEqual(
             {
                 "stand": 0.1,
-                "pure_x": 0.0,
+                "pure_x": 0.4,
                 "pure_y": 0.0,
-                "pure_yaw": 0.9,
+                "pure_yaw": 0.4,
                 "xy": 0.0,
-                "x_yaw": 0.0,
+                "x_yaw": 0.1,
                 "y_yaw": 0.0,
                 "full": 0.0,
             },
             cfg.commands.planar_command_mixture,
         )
+        self.assertEqual([-0.3, 0.3], cfg.commands.lin_vel_x)
         self.assertEqual([-0.3, 0.3], cfg.commands.ang_vel_yaw)
         self.assertEqual(1.2, cfg.rewards.yaw_gait_frequency)
         self.assertEqual(0.03, cfg.rewards.yaw_gait_step_length)
@@ -806,16 +822,21 @@ class ZGWSARMContractTests(unittest.TestCase):
         cfg = ZGWSARMComplianceCfgPPO()
 
         self.assertEqual(48, cfg.runner.num_steps_per_env)
-        self.assertEqual(10000, cfg.runner.max_iterations)
+        self.assertEqual(1500, cfg.runner.max_iterations)
         self.assertEqual(500, cfg.runner.save_interval)
         self.assertEqual(0, cfg.runner.save_video_interval)
         self.assertEqual(1, cfg.runner.log_freq)
+        self.assertFalse(cfg.runner.resume_curriculum)
         self.assertEqual(1.0e-3, cfg.algorithm.learning_rate)
         self.assertEqual(0.005, cfg.algorithm.entropy_coef)
-        self.assertEqual("yaw_sideswing_ablation", cfg.run.training_name)
-        self.assertFalse(cfg.run.resume)
-        self.assertIsNone(cfg.run.resume_run_dir)
-        self.assertEqual("latest", cfg.run.resume_checkpoint)
+        self.assertEqual("831_phase_b1_multimotion", cfg.run.training_name)
+        self.assertTrue(cfg.run.resume)
+        self.assertEqual(
+            "logs/zgwsarm_compliance/2026-08-31_10-01-24_828v2",
+            cfg.run.resume_run_dir,
+        )
+        self.assertEqual("3500", cfg.run.resume_checkpoint)
+        self.assertTrue(cfg.run.reset_progress_on_load)
 
     def test_reward_container_does_not_inherit_b1_gait_semantics(self):
         self.assertTrue(issubclass(ZGWSARMRewards, WholeBodyComplianceRewards))
@@ -1283,7 +1304,12 @@ class ZGWSARMContractTests(unittest.TestCase):
             100000, "cpu", generator=generator
         )
 
-        expected = {"stand": 0.1, "pure_yaw": 0.9}
+        expected = {
+            "stand": 0.1,
+            "pure_x": 0.4,
+            "pure_yaw": 0.4,
+            "x_yaw": 0.1,
+        }
         for name in LOCOMOTION_MODE_NAMES:
             selected = mode_ids == LOCOMOTION_MODE_TO_ID[name]
             frequency = selected.float().mean().item()
@@ -1296,12 +1322,24 @@ class ZGWSARMContractTests(unittest.TestCase):
                 self.assertTrue(torch.all(commands[selected, :2] == 0.0))
             elif name == "x_yaw":
                 self.assertTrue(torch.all(commands[selected, 1] == 0.0))
-        self.assertEqual(0.0, commands[:, 0].abs().max().item())
+        self.assertLessEqual(commands[:, 0].abs().max().item(), 0.3)
         self.assertLessEqual(commands[:, 2].abs().max().item(), 0.3)
-        active_yaw = mode_ids == LOCOMOTION_MODE_TO_ID["pure_yaw"]
+        active_x = (
+            (mode_ids == LOCOMOTION_MODE_TO_ID["pure_x"])
+            | (mode_ids == LOCOMOTION_MODE_TO_ID["x_yaw"])
+        )
+        active_yaw = (
+            (mode_ids == LOCOMOTION_MODE_TO_ID["pure_yaw"])
+            | (mode_ids == LOCOMOTION_MODE_TO_ID["x_yaw"])
+        )
+        self.assertGreaterEqual(
+            commands[active_x, 0].abs().min().item(), 0.15
+        )
         self.assertGreaterEqual(
             commands[active_yaw, 2].abs().min().item(), 0.15
         )
+        self.assertTrue(torch.any(commands[active_x, 0] < 0.0))
+        self.assertTrue(torch.any(commands[active_x, 0] > 0.0))
         self.assertTrue(torch.any(commands[active_yaw, 2] < 0.0))
         self.assertTrue(torch.any(commands[active_yaw, 2] > 0.0))
 
@@ -1352,7 +1390,10 @@ class ZGWSARMContractTests(unittest.TestCase):
         cfg = ZGWSARMComplianceCfg()
         cfg.commands.command_curriculum = False
         curriculum = ContinuousVelocityCurriculum(cfg.commands)
-        self.assertEqual([[0.0, 0.0], [0.0, 0.0], [-0.3, 0.3]], curriculum.current_ranges)
+        self.assertEqual(
+            [[-1.0, 1.0], [0.0, 0.0], [-1.5, 1.5]],
+            curriculum.current_ranges,
+        )
 
     def test_continuous_curriculum_runtime_state_round_trips(self):
         cfg = ZGWSARMComplianceCfg()

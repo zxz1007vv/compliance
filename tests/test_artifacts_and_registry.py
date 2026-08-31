@@ -35,6 +35,12 @@ class DummyRunner:
         self.env = env
         self.kwargs = kwargs
 
+    def load(self, path):
+        self.loaded_path = Path(path)
+        self.current_learning_iteration = 3500
+        self.tot_timesteps = 123456
+        self.tot_time = 789.0
+
 
 def env_cfg_factory():
     return ConfigNode(env=ConfigNode(num_envs=4096))
@@ -171,6 +177,44 @@ class ArtifactsAndRegistryTests(unittest.TestCase):
         self.assertEqual("pre_environment_init", logged["ConfigMeta"]["env_config_stage"])
         self.assertNotIn("runtime_marker", logged["Cfg"])
         self.assertEqual(32, logged["Cfg"]["env"]["num_envs"])
+
+    def test_registry_can_warm_start_with_fresh_progress_numbering(self):
+        registry = TaskRegistry()
+        registry.register(
+            "dummy",
+            DummyEnv,
+            env_cfg_factory,
+            train_cfg_factory,
+            DummyRunner,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_dir = Path(directory) / "checkpoints"
+            checkpoint_dir.mkdir()
+            checkpoint = checkpoint_dir / "model_003500.pt"
+            checkpoint.touch()
+            args = SimpleNamespace(
+                num_envs=None,
+                max_iterations=None,
+                save_interval=None,
+                run_name=None,
+                sim_device="cpu",
+                rl_device="cpu",
+                headless=True,
+                physics_engine="SIM_PHYSX",
+                resume_run_dir=directory,
+                checkpoint="3500",
+            )
+            env, _ = registry.make_env("dummy", args)
+            train_cfg = train_cfg_factory()
+            train_cfg.run.reset_progress_on_load = True
+            runner, _ = registry.make_alg_runner(
+                env, "dummy", args, train_cfg=train_cfg
+            )
+
+        self.assertEqual(checkpoint, runner.loaded_path)
+        self.assertEqual(0, runner.current_learning_iteration)
+        self.assertEqual(0, runner.tot_timesteps)
+        self.assertEqual(0.0, runner.tot_time)
 
     def test_builtin_registration_is_idempotent(self):
         first = register_tasks()

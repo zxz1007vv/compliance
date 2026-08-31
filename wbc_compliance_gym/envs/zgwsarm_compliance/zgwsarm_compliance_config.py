@@ -220,7 +220,9 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.command_curriculum = True
     cfg.commands.distributional_commands = True
     cfg.commands.velocity_sampling = "continuous_modes"
-    cfg.commands.lin_vel_x = [-0.5, 0.5]
+    # Phase B1 starts new translational commands conservatively while keeping
+    # the learned pure-yaw mechanism in the replay distribution.
+    cfg.commands.lin_vel_x = [-0.3, 0.3]
     cfg.commands.limit_vel_x = [-1.0, 1.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
@@ -238,16 +240,16 @@ def _configure_zgwsarm_commands(cfg):
     cfg.commands.velocity_curriculum_required_successes = 2
     cfg.commands.velocity_curriculum_ema_alpha = 0.5
     cfg.commands.velocity_curriculum_active_threshold = 0.05
-    # Mechanism-learning phase: train only unambiguous yaw commands and omit
-    # the near-zero band where a stationary policy is already competitive.
-    cfg.commands.min_active_command_magnitude = [0.0, 0.0, 0.15] #[vx,vy,yaw]命令最小值，默认为0
+    # Exclude near-zero active commands so standing is learned only from the
+    # explicit stand slice, not from ambiguous pure-x or pure-yaw samples.
+    cfg.commands.min_active_command_magnitude = [0.15, 0.0, 0.15]
     cfg.commands.planar_command_mixture = {
         "stand": 0.1,
-        "pure_x": 0.0,
+        "pure_x": 0.4,
         "pure_y": 0.0,
-        "pure_yaw": 0.9,
+        "pure_yaw": 0.4,
         "xy": 0.0,
-        "x_yaw": 0.0,
+        "x_yaw": 0.1,
         "y_yaw": 0.0,
         "full": 0.0,
     }
@@ -582,10 +584,15 @@ def _configure_zgwsarm_training(cfg):
     """Task-owned training defaults; explicit CLI arguments override these."""
     # Rollout length and training schedule.
     cfg.runner.num_steps_per_env = 48
-    cfg.runner.max_iterations = 10000
+    # Phase B1 adds pure-x and a small x-yaw slice for 1500 policy updates.
+    # It is a new run, so its own iteration counter spans 0 through 1500.
+    cfg.runner.max_iterations = 1500
     cfg.runner.save_interval = 500
     cfg.runner.save_video_interval = 0
     cfg.runner.log_freq = 1
+    # Reset command ranges/statistics for the new phase instead of restoring
+    # the Phase-A curriculum payload embedded in the checkpoint.
+    cfg.runner.resume_curriculum = False
 
     # Common PPO tuning parameters.
     cfg.algorithm.learning_rate = 1.0e-3
@@ -595,15 +602,18 @@ def _configure_zgwsarm_training(cfg):
     cfg.algorithm.num_mini_batches = 4
 
     # Run identity. ``--run-name`` overrides training_name for one launch.
-    cfg.run.training_name = "828v2"
+    cfg.run.training_name = "831_phase_b1_multimotion"
     cfg.run.experiment_group = "wbc"
     cfg.run.experiment_job_type = "release"
 
     # Local checkpoint resume. This deliberately does not use
     # cfg.runner.resume, which is the legacy remote W&B resume path.
-    cfg.run.resume = False
-    cfg.run.resume_run_dir = None  # None: use the latest local run for this task.
-    cfg.run.resume_checkpoint = "latest"
+    cfg.run.resume = True
+    cfg.run.resume_run_dir = (
+        "logs/zgwsarm_compliance/2026-08-31_10-01-24_828v2"
+    )
+    cfg.run.resume_checkpoint = "3500"
+    cfg.run.reset_progress_on_load = True
     return cfg
 
 
@@ -812,8 +822,8 @@ def configure_zgwsarm_compliance_play(
     cfg.commands.limit_vel_x = [0.0, 0.0]
     cfg.commands.lin_vel_y = [0.0, 0.0]
     cfg.commands.limit_vel_y = [0.0, 0.0]
-    cfg.commands.ang_vel_yaw = [1.0, 1.00]
-    cfg.commands.limit_vel_yaw = [1.0, 1.0]
+    cfg.commands.ang_vel_yaw = [0.5, 0.50]
+    cfg.commands.limit_vel_yaw = [0.5, 0.5]
     cfg.commands.planar_command_mixture = {"pure_yaw": 1.0}
     # Task-owned play defaults. Edit this block to change normal play behavior.
     cfg.commands.hybrid_mode = "position"

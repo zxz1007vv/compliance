@@ -19,6 +19,8 @@ from wbc_compliance_gym.commands import (
     LOCOMOTION_MODE_NAMES,
     LOCOMOTION_MODE_TO_ID,
     resolve_yaw_gait_phase_slots,
+    yaw_swing_envelope,
+    yaw_swing_trajectory,
 )
 
 from .common import WholeBodyComplianceRewards
@@ -188,6 +190,33 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
     def _get_yaw_swing_progress(self):
         return torch.remainder(self._get_yaw_gait_phase() * 4.0, 1.0)
 
+    def _get_yaw_swing_weight(self):
+        envelope = yaw_swing_envelope(
+            self._get_yaw_swing_progress(),
+            self.env.cfg.rewards.yaw_gait_transition_fraction,
+        )
+        return self._get_yaw_swing_mask().float() * envelope[:, None]
+
+    def _get_yaw_motion_weight(self):
+        """Weight velocity shaping by the derivative of the swing trajectory."""
+        transition = float(
+            self.env.cfg.rewards.yaw_gait_transition_fraction
+        )
+        progress = self._get_yaw_swing_progress()
+        motion_progress = (
+            (progress - transition) / (1.0 - 2.0 * transition)
+        ).clip(0.0, 1.0)
+        motion_envelope = 4.0 * motion_progress * (1.0 - motion_progress)
+        return self._get_yaw_swing_mask().float() * motion_envelope[:, None]
+
+    def _get_yaw_step_scale(self):
+        reference_yaw = float(
+            self.env.cfg.rewards.yaw_gait_step_reference_yaw
+        )
+        return (torch.abs(self.env.commands[:, 2]) / reference_yaw).clip(
+            0.0, 1.0
+        )
+
     def _get_nominal_wheel_xy(self, reference):
         """Build nominal footholds from the configured support-box centers."""
         nominal = torch.empty(
@@ -226,12 +255,15 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
     def _get_yaw_target_footholds(self, current_positions):
         nominal_xy = self._get_nominal_wheel_xy(current_positions)
         tangent = self._get_yaw_tangent_vectors(nominal_xy)
-        progress = (2.0 * self._get_yaw_swing_progress()).clip(0.0, 1.0)
-        smoothstep = 3.0 * torch.square(progress) - 2.0 * torch.pow(progress, 3)
+        trajectory = yaw_swing_trajectory(
+            self._get_yaw_swing_progress(),
+            self.env.cfg.rewards.yaw_gait_transition_fraction,
+        )
         direction = torch.sign(self.env.commands[:, 2])
         displacement = (
             direction[:, None, None]
-            * smoothstep[:, None, None]
+            * self._get_yaw_step_scale()[:, None, None]
+            * trajectory[:, None, None]
             * float(self.env.cfg.rewards.yaw_gait_step_length)
             * tangent[None, :, :]
         )
@@ -286,7 +318,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         """Reward one unloaded swing wheel and three load-bearing wheels."""
         wheel_state = self.env.get_wheel_kinematics()
         normal_forces = wheel_state["normal_forces"]
-        swing_mask = self._get_yaw_swing_mask()
+        swing_weight = self._get_yaw_swing_weight()
         stance_score = torch.sigmoid(
             (
                 normal_forces
@@ -300,7 +332,9 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
                 / float(self.env.cfg.rewards.yaw_gait_swing_force_scale)
             )
         )
-        score = torch.where(swing_mask, swing_score, stance_score).mean(dim=1)
+        score = (
+            stance_score + swing_weight * (swing_score - stance_score)
+        ).mean(dim=1)
         return score * self._pure_yaw_command_mask().float()
 
     def _reward_yaw_foothold_tracking(self):
@@ -329,8 +363,8 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             self.env.cfg.rewards.yaw_gait_tangential_velocity_scale
         )
         scores = torch.tanh(tangential_velocity / scale).clip(min=0.0)
-        swing_mask = self._get_yaw_swing_mask().float()
-        swing_score = torch.sum(scores * swing_mask, dim=1)
+        motion_weight = self._get_yaw_motion_weight()
+        swing_score = torch.sum(scores * motion_weight, dim=1)
         return swing_score * self._pure_yaw_command_mask().float()
 
     def get_yaw_gait_diagnostics(self):
@@ -375,6 +409,9 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             "swing_foot_normal_force": swing_force,
             "stance_feet_normal_force": stance_force,
             "foothold_tracking_error": swing_foothold_error,
+            "commanded_step_length": self._get_yaw_step_scale()
+            * float(self.env.cfg.rewards.yaw_gait_step_length),
+            "swing_activation": self._get_yaw_swing_weight().sum(dim=1),
             "abad_max_deviation": abad_deviation.max(dim=1).values,
         }
         for wheel_index, dof_name in enumerate(

@@ -525,9 +525,11 @@ ZGWSARM 的 base velocity 不再进入多维 bin grid，而使用“先采 locom
 
 pure-yaw 使用与 `ClockSensor` 同源的 1.2 Hz 四拍 crawl：
 `FAR → RBL → FBL → RAR`。每拍由 `yaw_gait_support` 引导一足卸载、三足承重，
-`yaw_foothold_tracking` 引导 swing 足沿 yaw 切向移动 5 cm，并用有界切向速度 reward
-提供进度信号。pure-yaw 下旧的四轮接触和逐轮最低载荷项关闭，其他 mode 保持原逻辑；
-机身与轮速 yaw tracking 继续提供最终任务目标。
+并使用 15% 卸载、70% 摆动、15% 重载的连续接触包络。`yaw_foothold_tracking`
+引导 swing 足沿 yaw 切向移动：最大步长为 3 cm，在 `|yaw|=0.3 rad/s` 达到最大值，
+较小命令按比例缩短；有界切向速度 reward 只在中间运动段提供进度信号。pure-yaw 下
+旧的四轮接触和逐轮最低载荷项关闭，其他 mode 保持原逻辑；机身与轮速 yaw tracking
+继续提供最终任务目标。
 
 Phase A 使用平地、固定机械臂 nominal pose、零 force command，并关闭 roughness、push、
 COM、gravity 和 motor randomization。形成稳定转向机构后，再从该 checkpoint 进入

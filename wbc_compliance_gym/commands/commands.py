@@ -24,6 +24,7 @@ from .velocity_curriculum import (
     LOCOMOTION_MODE_TO_ID,
     ContinuousVelocityCurriculum,
     resolve_yaw_gait_phase_slots,
+    yaw_swing_envelope,
 )
 
 
@@ -1247,7 +1248,16 @@ class CommandLifecycleMixin:
                 torch.remainder(self.gait_indices, 1.0) * 4.0
             ).long()
             yaw_swing = active_slot[:, None] == yaw_phase_slots.long()[None, :]
-            self.desired_contact_states[pure_yaw] = (~yaw_swing[pure_yaw]).float()
+            yaw_swing_progress = torch.remainder(self.gait_indices * 4.0, 1.0)
+            yaw_swing_weight = yaw_swing.float() * yaw_swing_envelope(
+                yaw_swing_progress,
+                self.cfg.rewards.yaw_gait_transition_fraction,
+            )[:, None]
+            # 1 means loaded stance and 0 means unloaded swing.  The smooth
+            # transition allows brief four-wheel support at beat boundaries.
+            self.desired_contact_states[pure_yaw] = (
+                1.0 - yaw_swing_weight[pure_yaw]
+            )
 
         if self.cfg.commands.num_commands > 9:
             self.desired_footswing_height = self.commands[:, 9]

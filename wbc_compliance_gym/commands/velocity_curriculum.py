@@ -49,6 +49,32 @@ def resolve_yaw_gait_phase_slots(wheel_dof_names, phase_order):
     return tuple(slot_by_name[name] for name in wheel_names)
 
 
+def yaw_swing_envelope(swing_progress, transition_fraction):
+    """Smoothly unload and reload the scheduled wheel within one gait beat."""
+    transition_fraction = float(transition_fraction)
+    if not 0.0 < transition_fraction < 0.5:
+        raise ValueError("yaw gait transition fraction must lie in (0, 0.5)")
+    progress = torch.remainder(swing_progress, 1.0)
+    unload = (progress / transition_fraction).clip(0.0, 1.0)
+    reload = ((1.0 - progress) / transition_fraction).clip(0.0, 1.0)
+    unload = torch.square(unload) * (3.0 - 2.0 * unload)
+    reload = torch.square(reload) * (3.0 - 2.0 * reload)
+    return unload * reload
+
+
+def yaw_swing_trajectory(swing_progress, transition_fraction):
+    """Return smooth swing progress restricted to the middle of a gait beat."""
+    transition_fraction = float(transition_fraction)
+    if not 0.0 < transition_fraction < 0.5:
+        raise ValueError("yaw gait transition fraction must lie in (0, 0.5)")
+    progress = torch.remainder(swing_progress, 1.0)
+    motion_duration = 1.0 - 2.0 * transition_fraction
+    motion_progress = (
+        (progress - transition_fraction) / motion_duration
+    ).clip(0.0, 1.0)
+    return torch.square(motion_progress) * (3.0 - 2.0 * motion_progress)
+
+
 def _pair(value, name):
     if len(value) != 2 or float(value[0]) > float(value[1]):
         raise ValueError(f"commands.{name} must be an ordered [min, max] pair")

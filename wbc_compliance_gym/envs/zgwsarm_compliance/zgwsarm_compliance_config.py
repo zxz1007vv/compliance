@@ -522,7 +522,11 @@ def _configure_zgwsarm_rewards(cfg):
     cfg.rewards.yaw_height_allowed_drop = 0.03
     cfg.rewards.yaw_height_scale = 0.04
     cfg.rewards.yaw_gait_frequency = 1.2
-    cfg.rewards.yaw_gait_step_length = 0.05
+    # Scale a 3 cm maximum step linearly up to |yaw|=0.3 rad/s.  Each beat
+    # reserves 15% for unloading and reloading, leaving 70% for foot motion.
+    cfg.rewards.yaw_gait_step_length = 0.03
+    cfg.rewards.yaw_gait_step_reference_yaw = 0.30
+    cfg.rewards.yaw_gait_transition_fraction = 0.15
     cfg.rewards.yaw_gait_foothold_sigma = 0.04
     cfg.rewards.yaw_gait_stance_min_force = 30.0
     cfg.rewards.yaw_gait_stance_force_scale = 8.0
@@ -674,6 +678,7 @@ def _validate_zgwsarm_config(cfg):
         "tracking_sigma_v_yaw",
         "yaw_gait_frequency",
         "yaw_gait_step_length",
+        "yaw_gait_step_reference_yaw",
         "yaw_gait_foothold_sigma",
         "yaw_gait_stance_min_force",
         "yaw_gait_stance_force_scale",
@@ -700,6 +705,10 @@ def _validate_zgwsarm_config(cfg):
         )
     if cfg.rewards.yaw_height_allowed_drop < 0.0:
         raise ValueError("yaw_height_allowed_drop must be non-negative")
+    if not 0.0 < cfg.rewards.yaw_gait_transition_fraction < 0.5:
+        raise ValueError(
+            "yaw_gait_transition_fraction must lie in (0, 0.5)"
+        )
     resolve_yaw_gait_phase_slots(
         cfg.asset.wheel_dof_names, cfg.rewards.yaw_gait_phase_order
     )

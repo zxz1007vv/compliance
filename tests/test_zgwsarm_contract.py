@@ -19,6 +19,8 @@ from wbc_compliance_gym.commands import (
     ContinuousVelocityCurriculum,
     build_command_curricula,
     resolve_yaw_gait_phase_slots,
+    yaw_swing_envelope,
+    yaw_swing_trajectory,
 )
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
@@ -485,7 +487,9 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
         self.assertEqual([-0.3, 0.3], cfg.commands.ang_vel_yaw)
         self.assertEqual(1.2, cfg.rewards.yaw_gait_frequency)
-        self.assertEqual(0.05, cfg.rewards.yaw_gait_step_length)
+        self.assertEqual(0.03, cfg.rewards.yaw_gait_step_length)
+        self.assertEqual(0.30, cfg.rewards.yaw_gait_step_reference_yaw)
+        self.assertEqual(0.15, cfg.rewards.yaw_gait_transition_fraction)
         self.assertEqual(0.04, cfg.rewards.yaw_gait_foothold_sigma)
         self.assertEqual(30.0, cfg.rewards.yaw_gait_stance_min_force)
         self.assertEqual(8.0, cfg.rewards.yaw_gait_stance_force_scale)
@@ -1130,6 +1134,17 @@ class ZGWSARMContractTests(unittest.TestCase):
             ),
         )
 
+    def test_yaw_gait_uses_smooth_load_and_motion_windows(self):
+        progress = torch.tensor([0.0, 0.075, 0.15, 0.5, 0.85, 0.925])
+        torch.testing.assert_close(
+            yaw_swing_envelope(progress, 0.15),
+            torch.tensor([0.0, 0.5, 1.0, 1.0, 1.0, 0.5]),
+        )
+        torch.testing.assert_close(
+            yaw_swing_trajectory(progress, 0.15),
+            torch.tensor([0.0, 0.0, 0.0, 0.5, 1.0, 1.0]),
+        )
+
     def test_yaw_gait_rewards_support_and_mirror_footholds(self):
         cfg = ZGWSARMComplianceCfg()
         nominal_xy = torch.tensor(
@@ -1182,6 +1197,12 @@ class ZGWSARMContractTests(unittest.TestCase):
         torch.testing.assert_close(
             targets[0] - nominal_xy, -(targets[1] - nominal_xy)
         )
+        # At the middle of the motion window, a 0.2 rad/s command has
+        # completed half of its 2 cm command-scaled step.
+        torch.testing.assert_close(
+            torch.linalg.norm(targets[0] - nominal_xy, dim=1),
+            torch.full((4,), 0.01),
+        )
         positions[:2] = torch.cat(
             (targets[:2], torch.zeros(2, 4, 1)), dim=2
         )
@@ -1223,6 +1244,8 @@ class ZGWSARMContractTests(unittest.TestCase):
             "swing_foot_normal_force",
             "stance_feet_normal_force",
             "foothold_tracking_error",
+            "commanded_step_length",
+            "swing_activation",
             "abad_max_deviation",
             "FAR_contact",
             "FBL_contact",

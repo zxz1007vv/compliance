@@ -21,13 +21,19 @@ Ubuntu 上安装基础依赖：
 sudo apt install build-essential cmake libsdl2-dev libglfw3-dev libyaml-dev
 ```
 
-下载 MuJoCo 的 Linux x86-64 binary release 并设置根目录，例如：
+下载 MuJoCo 的 Linux x86-64 binary release 并设置根目录。若安装目录不包含
+`simulate/` 源码，同时下载同版本源码，并通过 `MUJOCO_SOURCE_ROOT` 指定源码根目录：
 
 ```bash
 export MUJOCO_ROOT=/opt/mujoco-3.9.0
+export MUJOCO_SOURCE_ROOT=/opt/mujoco-3.9.0-src  # 仅官方 classic Viewer 需要
 conda activate compliance
 mujoco/scripts/configure.sh
 ```
+
+这两个变量只描述当前机器上的依赖位置，不应在仓库文件中硬编码。它们会进入本机忽略提交的
+`mujoco/build/CMakeCache.txt`；其他开发者安装依赖后设置自己的路径即可。若 MuJoCo 安装在
+CMake 的标准搜索路径中，也可以不设置 `MUJOCO_ROOT`。
 
 构建脚本会从当前 Python 环境定位 Torch。若使用官方 CPU LibTorch，也可以直接配置：
 
@@ -190,11 +196,12 @@ yaw 应由对角踏步产生。`pure_x` 才继续使用轮 action 驱动。
 mujoco/scripts/run_diagnostic.sh --help
 ```
 
-`--viewer` 直接复用 MuJoCo binary release 内的 `simulate/` 源码，因此界面与常用的
+`--viewer` 直接复用与运行库版本一致的 MuJoCo `simulate/` 源码，因此界面与常用的
 官方 MuJoCo Viewer 一致：左右侧栏、鼠标相机、关节/执行器面板、传感器和 profiler
-都可用。它不是只绘制模型的简化 GLFW 窗口。构建可视化程序时，`MUJOCO_ROOT` 必须
-指向完整的 MuJoCo binary release（其中应包含 `include/`、`lib/` 和 `simulate/`）；
-只安装 MuJoCo 动态库时仍可运行无界面 sim2sim，但不能启用这个官方 Viewer。
+都可用。它不是只绘制模型的简化 GLFW 窗口。构建可视化程序时，`MUJOCO_ROOT` 指向包含
+`include/` 和 `lib/` 的安装目录；如果该目录没有 `simulate/`，再用
+`MUJOCO_SOURCE_ROOT` 指向同版本源码目录。只安装 MuJoCo 动态库时仍可运行无界面
+sim2sim，但不能启用这个官方 Viewer。
 
 ## 4. Logitech F710 映射
 

@@ -12,6 +12,8 @@ set(MUJOCO_TORCH_ROOT "" CACHE PATH
     "Torch Python package root; bypasses CUDA checks and links CPU inference libraries directly")
 set(MUJOCO_TORCH_CXX11_ABI "0" CACHE STRING "_GLIBCXX_USE_CXX11_ABI value of the Torch package")
 set(MUJOCO_ROOT "" CACHE PATH "MuJoCo binary distribution root")
+set(MUJOCO_SOURCE_ROOT "" CACHE PATH
+    "MuJoCo source root; used to build the optional official simulate viewer")
 set(MUJOCO_YAML_ROOT "" CACHE PATH "libyaml development package root")
 
 find_path(MUJOCO_YAML_INCLUDE_DIR yaml.h
@@ -65,6 +67,12 @@ target_compile_options(mujoco_core PRIVATE -Wall -Wextra -Wpedantic)
 
 if(MUJOCO_ENABLE_SDL2)
   find_package(SDL2 QUIET CONFIG)
+  if(NOT SDL2_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(SDL2 QUIET sdl2)
+    endif()
+  endif()
   if(SDL2_FOUND)
     target_compile_definitions(mujoco_core PUBLIC MUJOCO_HAS_SDL2=1)
     if(TARGET SDL2::SDL2)
@@ -120,8 +128,22 @@ if(MUJOCO_BUILD_SIMULATOR)
       add_test(NAME mujoco_simulator_tests COMMAND mujoco_simulator_tests)
     endif()
     find_package(glfw3 QUIET)
+    set(MUJOCO_GLFW_TARGET "")
+    if(TARGET glfw)
+      set(MUJOCO_GLFW_TARGET glfw)
+    else()
+      find_package(PkgConfig QUIET)
+      if(PkgConfig_FOUND)
+        pkg_check_modules(MUJOCO_GLFW QUIET IMPORTED_TARGET glfw3)
+        if(TARGET PkgConfig::MUJOCO_GLFW)
+          set(MUJOCO_GLFW_TARGET PkgConfig::MUJOCO_GLFW)
+        endif()
+      endif()
+    endif()
     set(MUJOCO_SIMULATE_SOURCE_DIR "")
     foreach(candidate
+        "${MUJOCO_SOURCE_ROOT}/simulate"
+        "$ENV{MUJOCO_SOURCE_ROOT}/simulate"
         "${MUJOCO_ROOT}/simulate"
         "$ENV{MUJOCO_ROOT}/simulate"
         "${MUJOCO_INCLUDE_DIR}/../simulate")
@@ -130,7 +152,7 @@ if(MUJOCO_BUILD_SIMULATOR)
         break()
       endif()
     endforeach()
-    if(TARGET glfw AND MUJOCO_SIMULATE_SOURCE_DIR)
+    if(MUJOCO_GLFW_TARGET AND MUJOCO_SIMULATE_SOURCE_DIR)
       find_package(Threads REQUIRED)
       add_library(mujoco_classic_viewer
         "${MUJOCO_SIMULATE_SOURCE_DIR}/simulate.cc"
@@ -142,7 +164,7 @@ if(MUJOCO_BUILD_SIMULATOR)
         "${MUJOCO_SIMULATE_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lodepng_compat")
       target_link_libraries(mujoco_classic_viewer PUBLIC
-        mujoco::mujoco glfw Threads::Threads)
+        mujoco::mujoco ${MUJOCO_GLFW_TARGET} Threads::Threads)
       target_compile_options(mujoco_classic_viewer PRIVATE
         -Wno-unused-parameter -Wno-missing-field-initializers)
       target_compile_definitions(mujoco_simulator PUBLIC MUJOCO_HAS_CLASSIC_VIEWER=1)

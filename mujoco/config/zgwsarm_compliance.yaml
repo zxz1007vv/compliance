@@ -8,8 +8,7 @@ paths:
   scene_path: ../models/zgwsarm/scene_terrain.xml
   policy_backend: torchscript
   # An absolute exported policy path, such as .../policy_001200.pt, is also valid.
-  policy_path: /home/user/PROJECT/compliance/logs/zgwsarm_compliance/2026-08-26_15-09-43_826v1_lateral_slip_off/exported/policies/policy_006500.pt
-
+  policy_path: /home/user/PROJECT/compliance/logs/zgwsarm_compliance/2026-09-01_11-39-33_901_phase_c_repair_hybrid_legged_yaw/exported/policies/policy_latest.pt
 runtime:
   viewer: true
   realtime: true

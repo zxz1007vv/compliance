@@ -1,5 +1,5 @@
 {
-    "cmake.sourceDirectory": "/home/ubuntu/zskj/learning-compliance/mujoco",
+    "cmake.sourceDirectory": "/home/user/PROJECT/compliance/mujoco",
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

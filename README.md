@@ -514,32 +514,43 @@ RL(RBL) 4 + arm 6`，每条轮足链依次为 `ABAD/HIP/KNEE/FOOT`。策略 acti
 
 ZGWSARM 仿真步长为 `0.002 s`、控制 decimation 为 `5`，对应 500 Hz 物理仿真和
 100 Hz 策略频率。出生高度为 `0.55 m`，目标工作高度为 `0.54 m`。ABAD/HIP/KNEE
-使用位置 PD，增益分别为 `90/1`、`120/1`、`120/1`；轮关节不跟踪角度，使用
-`torque = 15 * action - 0.2 * wheel_velocity` 并按 URDF 裁剪到 `±28 N·m`。
-轮角不进入策略关节位置观测，真实轮速仍保留。
+使用位置 PD，增益分别为 `90/1`、`120/1`、`120/1`。`pure_x` 中轮关节不跟踪
+角度，使用 `torque = 15 * action - 0.2 * wheel_velocity` 并按 URDF 裁剪到
+`±28 N·m`；命令含 yaw 时，进入 yaw 的瞬间记录四个轮角，并以 `Kp=20、Kd=1.5`
+进行位置锁止，策略的轮 action 不再直接驱动轮子。轮角不进入策略关节位置观测，
+真实轮速仍保留。
 
 ZGWSARM 的 base velocity 不再进入多维 bin grid，而使用“先采 locomotion mode、再在
 激活维度内连续采样”的课程。当前 Phase A 使用 `stand/pure_yaw=0.1/0.9`，yaw 初始范围
 为 `±0.3 rad/s`，并排除 `|yaw_rate|<0.15 rad/s` 的近零命令；最终 limit 为
 `±1.5 rad/s`。yaw 根据 pure-mode MAE 独立按 `0.1` 扩张，运行时状态随 checkpoint 保存。
 
-pure-yaw 使用与 `ClockSensor` 同源的 1.2 Hz 四拍 crawl：
-`FAR → RBL → FBL → RAR`。每拍由 `yaw_gait_support` 引导一足卸载、三足承重，
-并使用 15% 卸载、70% 摆动、15% 重载的连续接触包络。`yaw_foothold_tracking`
-引导 swing 足沿 yaw 切向移动：最大步长为 3 cm，在 `|yaw|=0.3 rad/s` 达到最大值，
-较小命令按比例缩短；有界切向速度 reward 只在中间运动段提供进度信号。pure-yaw 下
-旧的四轮接触和逐轮最低载荷项关闭，其他 mode 保持原逻辑；机身与轮速 yaw tracking
-继续提供最终任务目标。
+含 yaw 的命令复用原始 B1 非轮式四足步态：轮子锁止后以 2.2 Hz 对角步态交替摆动
+`FAR/RBL` 与 `FBL/RAR`。训练使用与原始四足相同含义的 swing 卸载、stance 承重、
+摆动轮底离地高度和 Raibert 落脚点 shaping；轮径和机械臂负载适配后，目标轮底离地
+高度为 8 cm。语义轮位用于计算 Raibert 目标，因此不会依赖 URDF 中 FR/FL 的排列顺序。
+
+`pure_yaw` 和 `x_yaw` 都被定义为正常四足踏步转向：前者原地转，后者由腿同时完成
+前进和转弯，不再让轮子一边滚动一边由腿转向。两种模式都关闭轮速跟踪以及与踏步冲突的
+四轮持续接触、逐轮最低载荷和左右腿纵向对齐项；机身线速度/yaw-rate tracking 仍是
+最终任务目标。`pure_x` 保持轮式前进，不启用四足步态 shaping。
 
 Phase A 使用平地、固定机械臂 nominal pose、零 force command，并关闭 roughness、push、
-COM、gravity 和 motor randomization。Phase B1 从 `828v2` 的 3500 代 checkpoint 新建
-`831_phase_b1_multimotion` run，不恢复旧 command curriculum；速度范围从
-`vx/yaw=±0.3` 重新开始，命令 mixture 为
-`stand/pure_x/pure_yaw/x_yaw=0.10/0.40/0.40/0.10`。该阶段继续固定机械臂并保持平地、
-零力命令和关闭主要随机化，训练 1500 次更新后，再评估是否进入机械臂位置任务与域随机化
-阶段。新 run 采用 warm-start 语义：加载3500代策略和优化器状态，但将
-Phase B1 自身的迭代数、累计步数和计时归零，checkpoint 编号为
-`000000/000500/001000/001500`。
+COM、gravity 和 motor randomization。Phase B1 从 `828v2` 的3500代 checkpoint 学习
+`stand/pure_x/pure_yaw/x_yaw=0.10/0.40/0.40/0.10`，其1500代模型已达到
+`pure_vx_mae≈0.060 m/s`、`pure_yaw_mae≈0.095 rad/s`。
+
+直接放开完整机械臂范围的 `831_phase_c_full_arm_position` 在 sim2sim 中出现了机身下沉、
+前腿向两侧大幅劈叉和 pure-yaw 滑行，因此该模型不再作为续训源。修复阶段从姿态正常的
+Phase B1 1500代 checkpoint 新建 `901_phase_c_repair_locked_quadruped_yaw`：保持相同底盘命令 mixture，
+把机械臂先限制到可达的中等范围 `radius=0.55–0.80 m`、`pitch=-1.35～-0.60 rad`、
+`yaw=±0.60 rad`，轨迹时间仍为1–4秒。
+
+修复阶段还将支撑几何惩罚提高到 `-6`，在 `pure_x` 增加腿姿态 deadzone，并在含 yaw
+的模式启用四足步态 shaping；stand/pure-yaw 提高已有姿态、机身高度和水平约束，机械臂位置 reward 降为 `2`，防止策略
+靠压低底盘换取末端跟踪。训练3000次更新，每500代保存一次，entropy 降为 `0.001`。
+它继续使用 warm-start 语义：加载 Phase B1 策略与优化器，但新 run 的迭代、计时、RNG
+和 command curriculum 从零开始。
 
 ZGWSARM 原地 Position/Force/Binary 测试：
 

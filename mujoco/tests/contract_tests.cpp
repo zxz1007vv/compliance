@@ -50,6 +50,10 @@ mujoco::TaskProfile small_profile() {
   p.d_gains = {1, 0.2};
   p.control_kind = {"position_pd", "wheel_torque"};
   p.arm_dof_names = {"joint"};
+  p.wheel_dof_names = {"wheel"};
+  p.wheel_lock_command_threshold = 0.05;
+  p.wheel_lock_kp = 20.0;
+  p.wheel_lock_kd = 1.5;
   p.startup_dog_dof_names = {"wheel"};
   p.startup_fold_positions = {0.0};
   p.startup_stand_positions = {0.0};
@@ -171,6 +175,23 @@ int main() {
     expect(std::abs(control.torque[0]) < 1e-9, "position PD failed");
     expect(std::abs(control.torque[1] - 10.0) < 1e-9,
            "wheel torque/clipping failed");
+    profile.task_name = "zgwsarm_compliance";
+    profile.lock_wheels_for_yaw = true;
+    commands.set_scripted_value(2, 0.3f);
+    state.joint_position[1] = 0.2;
+    state.joint_velocity[1] = 0.0;
+    control = controller.compute({0, 1}, state, commands);
+    expect(std::abs(control.torque[1]) < 1e-9,
+           "wheel lock must capture the entry angle");
+    state.joint_position[1] = 0.3;
+    state.joint_velocity[1] = 1.0;
+    control = controller.compute({0, 1}, state, commands);
+    expect(std::abs(control.torque[1] + 3.5) < 1e-9,
+           "wheel lock position PD failed");
+    commands.advance_clock(0.1);
+    expect(!(commands.clock()[0] == 1.0f && commands.clock()[1] == 1.0f &&
+             commands.clock()[2] == 1.0f && commands.clock()[3] == 1.0f),
+           "small yaw commands must keep the quadruped gait clock active");
     const auto obs = mujoco::ObservationBuilder(profile).frame(
         state, commands.values(), {0, 1}, commands.clock());
     expect(obs.size() == static_cast<std::size_t>(profile.frame_dim),

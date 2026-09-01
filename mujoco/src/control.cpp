@@ -52,6 +52,8 @@ TaskController::TaskController(const TaskProfile& profile) : profile_(profile) {
   }
   for (const auto& name : profile_.arm_dof_names)
     arm_indices_.push_back(profile_.dof_index(name));
+  for (const auto& name : profile_.wheel_dof_names)
+    wheel_indices_.push_back(profile_.dof_index(name));
   reset();
 }
 
@@ -59,6 +61,8 @@ void TaskController::reset() {
   previous_arm_target_ = profile_.default_dof_positions;
   phase_start_positions_ = profile_.default_dof_positions;
   phase_elapsed_ = 0.0;
+  wheel_lock_reference_ = profile_.default_dof_positions;
+  wheel_lock_active_ = false;
   mode_ = RobotControlMode::kZeroTorque;
 }
 
@@ -77,6 +81,7 @@ bool TaskController::start_rl(const RobotState& state) {
   phase_start_positions_ = state.joint_position;
   previous_arm_target_ = state.joint_position;
   phase_elapsed_ = 0.0;
+  wheel_lock_active_ = false;
   mode_ = RobotControlMode::kRl;
   return true;
 }
@@ -142,8 +147,24 @@ ControlOutput TaskController::compute_rl(const std::vector<float>& action,
   if (teleop.input_active() && teleop.has_gripper_target())
     output.target_position[profile_.dof_index(profile_.direct_gripper_dof)] = teleop.gripper_target();
 
+  const bool lock_wheels = profile_.is_zgwsarm() &&
+      profile_.lock_wheels_for_yaw &&
+      std::abs(teleop.values()[2]) > profile_.wheel_lock_command_threshold;
+  if (lock_wheels && !wheel_lock_active_) {
+    for (const std::size_t index : wheel_indices_)
+      wheel_lock_reference_[index] = state.joint_position[index];
+  }
+  wheel_lock_active_ = lock_wheels;
+
   for (std::size_t index = 0; index < n; ++index) {
-    if (profile_.control_kind[index] == "wheel_torque") {
+    if (profile_.control_kind[index] == "wheel_torque" && lock_wheels) {
+      output.target_position[index] = wheel_lock_reference_[index];
+      output.torque[index] = profile_.wheel_lock_kp *
+                                 (wheel_lock_reference_[index] -
+                                  state.joint_position[index]) -
+                             profile_.wheel_lock_kd *
+                                 state.joint_velocity[index];
+    } else if (profile_.control_kind[index] == "wheel_torque") {
       output.torque[index] = static_cast<double>(action[index]) *
                                  profile_.action_scale_per_dof[index] * profile_.p_gains[index] -
                              profile_.d_gains[index] * state.joint_velocity[index];

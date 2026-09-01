@@ -130,8 +130,10 @@ TeleopEvent CommandState::update(const GamepadState& pad, double dt) {
 
 void CommandState::advance_clock(double dt) {
   gait_phase_ = std::fmod(gait_phase_ + dt * commands_[4], 1.0);
+  const bool stepping_yaw = profile_.lock_wheels_for_yaw &&
+      std::abs(commands_[2]) > profile_.wheel_lock_command_threshold;
   if (std::abs(commands_[0]) < 0.2f && std::abs(commands_[1]) < 0.2f &&
-      std::abs(commands_[2]) < 0.2f) {
+      std::abs(commands_[2]) < 0.2f && !stepping_yaw) {
     clock_ = {{1, 1, 1, 1}};
     return;
   }

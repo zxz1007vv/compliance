@@ -3,6 +3,7 @@
 import torch
 from isaacgym.torch_utils import quat_rotate_inverse
 
+from wbc_compliance_gym.commands import LOCOMOTION_MODE_TO_ID
 from wbc_compliance_gym.envs.base.velocity_tracking_env import VelocityTrackingEnv
 
 
@@ -15,6 +16,44 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
         if factors.ndim == 2 and factors.shape[1] == num_dof:
             return factors[:, indices]
         return factors
+
+    def _yaw_wheel_lock_mask(self):
+        if not bool(getattr(self.cfg.control, "lock_wheels_for_yaw", False)):
+            return torch.zeros(
+                self.num_envs, dtype=torch.bool, device=self.device
+            )
+        if hasattr(self, "locomotion_mode_ids"):
+            return (
+                (self.locomotion_mode_ids
+                 == LOCOMOTION_MODE_TO_ID["pure_yaw"])
+                | (self.locomotion_mode_ids
+                   == LOCOMOTION_MODE_TO_ID["x_yaw"])
+            )
+        threshold = float(self.cfg.control.wheel_lock_command_threshold)
+        return torch.abs(self.commands[:, 2]) > threshold
+
+    def _locked_wheel_torques(self, wheel_kd_factors):
+        """Capture wheel angles on yaw entry and hold them with torque PD."""
+        wheel_position = self.dof_pos[:, self.wheel_dof_indices]
+        if not hasattr(self, "wheel_lock_reference"):
+            self.wheel_lock_reference = wheel_position.clone()
+            self.wheel_lock_active = torch.zeros(
+                self.num_envs, dtype=torch.bool, device=self.device
+            )
+
+        lock_active = self._yaw_wheel_lock_mask()
+        entering = lock_active & ~self.wheel_lock_active
+        self.wheel_lock_reference[entering] = wheel_position[entering]
+        self.wheel_lock_active[:] = lock_active
+
+        position_error = self.wheel_lock_reference - wheel_position
+        lock_torque = (
+            float(self.cfg.control.wheel_lock_kp) * position_error
+            - float(self.cfg.control.wheel_lock_kd)
+            * wheel_kd_factors
+            * self.dof_vel[:, self.wheel_dof_indices]
+        )
+        return lock_active, lock_torque
 
     def _compute_torques(self, actions):
         """Apply leg position PD and wheel torque control.
@@ -86,12 +125,18 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
         wheel_kd_factors = self._select_group_factors(
             self.Kd_factors, self.wheel_dof_indices, self.num_dof
         )
-        ideal_torques[:, self.wheel_dof_indices] = (
+        wheel_drive_torque = (
             actions_post[:, self.wheel_dof_indices]
             * self.p_gains[self.wheel_dof_indices]
             - self.d_gains[self.wheel_dof_indices]
             * wheel_kd_factors
             * self.dof_vel[:, self.wheel_dof_indices]
+        )
+        lock_active, lock_torque = self._locked_wheel_torques(
+            wheel_kd_factors
+        )
+        ideal_torques[:, self.wheel_dof_indices] = torch.where(
+            lock_active[:, None], lock_torque, wheel_drive_torque
         )
 
         self.torques = torch.clamp(
@@ -462,6 +507,11 @@ class ZGWSARMComplianceEnv(VelocityTrackingEnv):
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
+        if hasattr(self, "wheel_lock_reference") and len(env_ids) > 0:
+            self.wheel_lock_reference[env_ids] = self.dof_pos[
+                env_ids.unsqueeze(1), self.wheel_dof_indices
+            ]
+            self.wheel_lock_active[env_ids] = False
         if hasattr(self, "semantic_contact_counter") and len(env_ids) > 0:
             self.semantic_contact_counter[env_ids] = 0
 

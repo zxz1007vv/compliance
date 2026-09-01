@@ -74,6 +74,10 @@ struct TaskProfile {
   std::vector<double> d_gains;
   std::vector<std::string> control_kind;
   double arm_target_velocity_limit_scale = 0.0;
+  bool lock_wheels_for_yaw = false;
+  double wheel_lock_command_threshold = 0.05;
+  double wheel_lock_kp = 0.0;
+  double wheel_lock_kd = 0.0;
   double teleop_force_limit = 0.0;
   double teleop_deadzone = 0.1;
   double teleop_precision_scale = 0.25;

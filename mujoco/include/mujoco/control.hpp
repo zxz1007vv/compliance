@@ -40,11 +40,14 @@ class TaskController {
   std::vector<double> previous_arm_target_;
   std::vector<std::size_t> dog_indices_;
   std::vector<std::size_t> arm_indices_;
+  std::vector<std::size_t> wheel_indices_;
   std::vector<double> fold_positions_;
   std::vector<double> stand_positions_;
   std::vector<double> startup_p_gains_;
   std::vector<double> startup_d_gains_;
   std::vector<double> phase_start_positions_;
+  std::vector<double> wheel_lock_reference_;
+  bool wheel_lock_active_ = false;
   RobotControlMode mode_ = RobotControlMode::kZeroTorque;
   double phase_elapsed_ = 0.0;
 

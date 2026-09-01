@@ -146,6 +146,10 @@ TaskProfile TaskProfile::Load(const std::filesystem::path& bundle,
   p.d_gains = cfg.numbers("d_gains");
   p.control_kind = cfg.strings("control_kind");
   p.arm_target_velocity_limit_scale = cfg.number("arm_target_velocity_limit_scale");
+  p.lock_wheels_for_yaw = cfg.get("lock_wheels_for_yaw") == "true";
+  p.wheel_lock_command_threshold = cfg.number("wheel_lock_command_threshold");
+  p.wheel_lock_kp = cfg.number("wheel_lock_kp");
+  p.wheel_lock_kd = cfg.number("wheel_lock_kd");
   p.teleop_force_limit = cfg.number("teleop_force_limit");
   p.teleop_deadzone = cfg.number("teleop_deadzone");
   p.teleop_precision_scale = cfg.number("teleop_precision_scale");
@@ -184,6 +188,11 @@ void TaskProfile::validate() const {
   require_size(p_gains, n, "p_gains");
   require_size(d_gains, n, "d_gains");
   require_size(control_kind, n, "control_kind");
+  if (is_zgwsarm() && lock_wheels_for_yaw &&
+      (wheel_lock_command_threshold <= 0.0 || wheel_lock_kp <= 0.0 ||
+       wheel_lock_kd <= 0.0)) {
+    throw std::runtime_error("Invalid locked-wheel yaw control contract");
+  }
   require_size(arm_mount_translation, 3, "arm_mount_translation");
   require_size(teleop_position_rates, 3, "teleop_position_rates");
   if (physics_dt <= 0 || decimation <= 0 || action_clip <= 0 || observation_clip <= 0)

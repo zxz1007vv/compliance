@@ -23,8 +23,6 @@ from .velocity_curriculum import (
     LOCOMOTION_MODE_ACTIVE_AXES,
     LOCOMOTION_MODE_TO_ID,
     ContinuousVelocityCurriculum,
-    resolve_yaw_gait_phase_slots,
-    yaw_swing_envelope,
 )
 
 
@@ -1122,23 +1120,17 @@ class CommandLifecycleMixin:
 
     def _step_contact_targets(self):
         frequencies = self.commands[:, 4].clone()
-        pure_yaw = torch.zeros(
+        stepping_yaw = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
-        yaw_gait_enabled = all(
-            hasattr(self.cfg.rewards, name)
-            for name in ("yaw_gait_frequency", "yaw_gait_phase_order")
-        ) and hasattr(self.cfg.asset, "wheel_dof_names")
-        if hasattr(self, "locomotion_mode_ids") and yaw_gait_enabled:
-            pure_yaw = (
-                self.locomotion_mode_ids
-                == LOCOMOTION_MODE_TO_ID["pure_yaw"]
+        locked_quadruped_yaw = bool(
+            getattr(self.cfg.control, "lock_wheels_for_yaw", False)
+        )
+        if hasattr(self, "locomotion_mode_ids") and locked_quadruped_yaw:
+            stepping_yaw = (
+                (self.locomotion_mode_ids == LOCOMOTION_MODE_TO_ID["pure_yaw"])
+                | (self.locomotion_mode_ids == LOCOMOTION_MODE_TO_ID["x_yaw"])
             )
-            yaw_gait_frequency = float(self.cfg.rewards.yaw_gait_frequency)
-            frequencies[pure_yaw] = yaw_gait_frequency
-            # Keep the command observed by RCSensor consistent with the phase
-            # rate that drives ClockSensor and the yaw gait rewards.
-            self.commands[pure_yaw, 4] = yaw_gait_frequency
         phases = self.commands[:, 5]
         offsets = self.commands[:, 6]
         bounds = self.commands[:, 7]
@@ -1168,26 +1160,6 @@ class CommandLifecycleMixin:
             ),
             1.0,
         )
-
-        yaw_phase_slots = None
-        if torch.any(pure_yaw):
-            yaw_phase_slots = torch.tensor(
-                resolve_yaw_gait_phase_slots(
-                    self.cfg.asset.wheel_dof_names,
-                    self.cfg.rewards.yaw_gait_phase_order,
-                ),
-                dtype=self.gait_indices.dtype,
-                device=self.device,
-            )
-            yaw_foot_indices = torch.remainder(
-                self.gait_indices[:, None] - yaw_phase_slots[None, :] / 4.0,
-                1.0,
-            )
-            self.foot_indices[pure_yaw] = yaw_foot_indices[pure_yaw]
-            for wheel_index in range(4):
-                foot_indices[wheel_index][pure_yaw] = yaw_foot_indices[
-                    pure_yaw, wheel_index
-                ]
 
         for idxs in foot_indices:
             stance_idxs = torch.remainder(idxs, 1) < durations
@@ -1238,26 +1210,10 @@ class CommandLifecycleMixin:
                 ),
                 torch.abs(self.commands[:, 2]) < 0.2,
             )
-            & ~pure_yaw
+            & ~stepping_yaw
         ]
         self.desired_contact_states[static_env_ids, :] = 1.0
         self.clock_inputs[static_env_ids, :] = 1.0
-
-        if torch.any(pure_yaw):
-            active_slot = torch.floor(
-                torch.remainder(self.gait_indices, 1.0) * 4.0
-            ).long()
-            yaw_swing = active_slot[:, None] == yaw_phase_slots.long()[None, :]
-            yaw_swing_progress = torch.remainder(self.gait_indices * 4.0, 1.0)
-            yaw_swing_weight = yaw_swing.float() * yaw_swing_envelope(
-                yaw_swing_progress,
-                self.cfg.rewards.yaw_gait_transition_fraction,
-            )[:, None]
-            # 1 means loaded stance and 0 means unloaded swing.  The smooth
-            # transition allows brief four-wheel support at beat boundaries.
-            self.desired_contact_states[pure_yaw] = (
-                1.0 - yaw_swing_weight[pure_yaw]
-            )
 
         if self.cfg.commands.num_commands > 9:
             self.desired_footswing_height = self.commands[:, 9]

@@ -34,12 +34,23 @@ class DummyRunner:
     def __init__(self, env, **kwargs):
         self.env = env
         self.kwargs = kwargs
+        self.current_learning_iteration = 0
+        self.tot_timesteps = 0
+        self.tot_time = 0.0
 
-    def load(self, path):
+    def load(
+        self,
+        path,
+        restore_runner_state=True,
+        restore_rng_state=True,
+    ):
         self.loaded_path = Path(path)
-        self.current_learning_iteration = 3500
-        self.tot_timesteps = 123456
-        self.tot_time = 789.0
+        self.restore_runner_state = restore_runner_state
+        self.restore_rng_state = restore_rng_state
+        if restore_runner_state:
+            self.current_learning_iteration = 3500
+            self.tot_timesteps = 123456
+            self.tot_time = 789.0
 
 
 def env_cfg_factory():
@@ -212,6 +223,8 @@ class ArtifactsAndRegistryTests(unittest.TestCase):
             )
 
         self.assertEqual(checkpoint, runner.loaded_path)
+        self.assertFalse(runner.restore_runner_state)
+        self.assertFalse(runner.restore_rng_state)
         self.assertEqual(0, runner.current_learning_iteration)
         self.assertEqual(0, runner.tot_timesteps)
         self.assertEqual(0.0, runner.tot_time)

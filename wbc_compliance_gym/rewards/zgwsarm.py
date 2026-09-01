@@ -18,9 +18,6 @@ from wbc_compliance_gym.commands import (
     LOCOMOTION_MODE_ACTIVE_AXES,
     LOCOMOTION_MODE_NAMES,
     LOCOMOTION_MODE_TO_ID,
-    resolve_yaw_gait_phase_slots,
-    yaw_swing_envelope,
-    yaw_swing_trajectory,
 )
 
 from .common import WholeBodyComplianceRewards
@@ -141,12 +138,14 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             < self.env.cfg.rewards.stand_still_command_threshold
         )
 
-    def _pure_yaw_command_mask(self):
-        """Select yaw-only commands without affecting combined locomotion."""
+    def _stepping_yaw_command_mask(self):
+        """Select yaw modes whose turning component is produced by leg steps."""
         if hasattr(self.env, "locomotion_mode_ids"):
             return (
-                self.env.locomotion_mode_ids
-                == LOCOMOTION_MODE_TO_ID["pure_yaw"]
+                (self.env.locomotion_mode_ids
+                 == LOCOMOTION_MODE_TO_ID["pure_yaw"])
+                | (self.env.locomotion_mode_ids
+                   == LOCOMOTION_MODE_TO_ID["x_yaw"])
             )
 
         if not hasattr(self.env, "commands"):
@@ -163,58 +162,8 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             )
         )
         return (
-            (torch.abs(self.env.commands[:, 0]) <= threshold)
-            & (torch.abs(self.env.commands[:, 1]) <= threshold)
+            (torch.abs(self.env.commands[:, 1]) <= threshold)
             & (torch.abs(self.env.commands[:, 2]) > threshold)
-        )
-
-    def _get_yaw_gait_phase(self):
-        """Return the phase buffer that also drives ClockSensor."""
-        return torch.remainder(self.env.gait_indices, 1.0)
-
-    def _get_yaw_gait_phase_slots(self):
-        return torch.tensor(
-            resolve_yaw_gait_phase_slots(
-                self.env.cfg.asset.wheel_dof_names,
-                self.env.cfg.rewards.yaw_gait_phase_order,
-            ),
-            dtype=torch.long,
-            device=self.env.commands.device,
-        )
-
-    def _get_yaw_swing_mask(self):
-        """Select exactly one repositioning wheel in each crawl phase."""
-        active_slot = torch.floor(self._get_yaw_gait_phase() * 4.0).long()
-        return active_slot[:, None] == self._get_yaw_gait_phase_slots()[None, :]
-
-    def _get_yaw_swing_progress(self):
-        return torch.remainder(self._get_yaw_gait_phase() * 4.0, 1.0)
-
-    def _get_yaw_swing_weight(self):
-        envelope = yaw_swing_envelope(
-            self._get_yaw_swing_progress(),
-            self.env.cfg.rewards.yaw_gait_transition_fraction,
-        )
-        return self._get_yaw_swing_mask().float() * envelope[:, None]
-
-    def _get_yaw_motion_weight(self):
-        """Weight velocity shaping by the derivative of the swing trajectory."""
-        transition = float(
-            self.env.cfg.rewards.yaw_gait_transition_fraction
-        )
-        progress = self._get_yaw_swing_progress()
-        motion_progress = (
-            (progress - transition) / (1.0 - 2.0 * transition)
-        ).clip(0.0, 1.0)
-        motion_envelope = 4.0 * motion_progress * (1.0 - motion_progress)
-        return self._get_yaw_swing_mask().float() * motion_envelope[:, None]
-
-    def _get_yaw_step_scale(self):
-        reference_yaw = float(
-            self.env.cfg.rewards.yaw_gait_step_reference_yaw
-        )
-        return (torch.abs(self.env.commands[:, 2]) / reference_yaw).clip(
-            0.0, 1.0
         )
 
     def _get_nominal_wheel_xy(self, reference):
@@ -246,34 +195,6 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             )
         return nominal
 
-    def _get_yaw_tangent_vectors(self, nominal_xy):
-        tangent = torch.stack((-nominal_xy[:, 1], nominal_xy[:, 0]), dim=1)
-        return tangent / torch.linalg.norm(tangent, dim=1, keepdim=True).clamp(
-            min=1e-6
-        )
-
-    def _get_yaw_target_footholds(self, current_positions):
-        nominal_xy = self._get_nominal_wheel_xy(current_positions)
-        tangent = self._get_yaw_tangent_vectors(nominal_xy)
-        trajectory = yaw_swing_trajectory(
-            self._get_yaw_swing_progress(),
-            self.env.cfg.rewards.yaw_gait_transition_fraction,
-        )
-        direction = torch.sign(self.env.commands[:, 2])
-        displacement = (
-            direction[:, None, None]
-            * self._get_yaw_step_scale()[:, None, None]
-            * trajectory[:, None, None]
-            * float(self.env.cfg.rewards.yaw_gait_step_length)
-            * tangent[None, :, :]
-        )
-        return nominal_xy[None, :, :] + displacement
-
-    def _yaw_foothold_error_squared(self, wheel_state):
-        positions_xy = wheel_state["positions_base"][:, :, :2]
-        target_xy = self._get_yaw_target_footholds(positions_xy)
-        return torch.sum(torch.square(positions_xy - target_xy), dim=2)
-
     def _reward_stance_posture(self):
         """Regularize leg posture only for the zero-velocity command slice."""
         posture_error = torch.mean(
@@ -299,10 +220,29 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         excess = (deviation - allowed).clip(min=0.0)
         scale = float(self.env.cfg.rewards.yaw_leg_posture_scale)
         posture_error = torch.mean(torch.square(excess / scale), dim=1)
-        return posture_error * self._pure_yaw_command_mask().float()
+        return posture_error * self._stepping_yaw_command_mask().float()
+
+    def _reward_locomotion_leg_posture(self):
+        """Prevent support splay in non-yaw locomotion under arm motion."""
+        allowed = torch.as_tensor(
+            self.env.cfg.rewards.locomotion_leg_posture_allowed_deviation,
+            dtype=self.env.dof_pos.dtype,
+            device=self.env.dof_pos.device,
+        )
+        deviation = torch.abs(
+            self.env.dof_pos[:, self._legs]
+            - self.env.default_dof_pos[:, self._legs]
+        )
+        excess = (deviation - allowed).clip(min=0.0)
+        scale = float(self.env.cfg.rewards.locomotion_leg_posture_scale)
+        posture_error = torch.mean(torch.square(excess / scale), dim=1)
+        moving_non_yaw = (
+            ~self._stand_command_mask() & ~self._stepping_yaw_command_mask()
+        )
+        return posture_error * moving_non_yaw.float()
 
     def _reward_yaw_height_floor(self):
-        """Prevent pure-yaw tracking from exploiting a deep body crouch."""
+        """Prevent stepping-yaw tracking from exploiting a deep body crouch."""
         minimum_height = (
             float(self.env.cfg.rewards.base_height_target)
             - float(self.env.cfg.rewards.yaw_height_allowed_drop)
@@ -312,81 +252,126 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         ).clip(min=0.0)
         scale = float(self.env.cfg.rewards.yaw_height_scale)
         height_error = torch.square(height_deficit / scale)
-        return height_error * self._pure_yaw_command_mask().float()
+        return height_error * self._stepping_yaw_command_mask().float()
 
-    def _reward_yaw_gait_support(self):
-        """Reward one unloaded swing wheel and three load-bearing wheels."""
-        wheel_state = self.env.get_wheel_kinematics()
-        normal_forces = wheel_state["normal_forces"]
-        swing_weight = self._get_yaw_swing_weight()
-        stance_score = torch.sigmoid(
-            (
-                normal_forces
-                - float(self.env.cfg.rewards.yaw_gait_stance_min_force)
-            )
-            / float(self.env.cfg.rewards.yaw_gait_stance_force_scale)
+    def _yaw_quadruped_swing_mask(self):
+        return (
+            self.env.clock_inputs
+            < float(self.env.cfg.rewards.yaw_quadruped_swing_ratio)
         )
-        swing_score = torch.exp(
-            -torch.square(
-                normal_forces
-                / float(self.env.cfg.rewards.yaw_gait_swing_force_scale)
-            )
+
+    def _yaw_quadruped_stance_mask(self):
+        return (
+            self.env.clock_inputs
+            > 1.0 - float(self.env.cfg.rewards.yaw_quadruped_stance_ratio)
+        )
+
+    def _reward_yaw_tracking_contacts_shaped_force(self):
+        """B1 swing-contact reward, restricted to locked-wheel yaw modes."""
+        normal_force = self.env.get_wheel_kinematics()["normal_forces"]
+        unloaded = normal_force < float(
+            self.env.cfg.rewards.yaw_quadruped_contact_force_threshold
         )
         score = (
-            stance_score + swing_weight * (swing_score - stance_score)
+            self._yaw_quadruped_swing_mask().float() * unloaded.float()
         ).mean(dim=1)
-        return score * self._pure_yaw_command_mask().float()
+        return score * self._stepping_yaw_command_mask().float()
 
-    def _reward_yaw_foothold_tracking(self):
-        """Move only the scheduled swing wheel along the commanded tangent."""
-        wheel_state = self.env.get_wheel_kinematics()
-        error_squared = self._yaw_foothold_error_squared(wheel_state)
-        sigma = float(self.env.cfg.rewards.yaw_gait_foothold_sigma)
-        scores = torch.exp(-error_squared / (sigma * sigma))
-        swing_mask = self._get_yaw_swing_mask().float()
-        swing_score = torch.sum(scores * swing_mask, dim=1)
-        return swing_score * self._pure_yaw_command_mask().float()
+    def _reward_yaw_tracking_contacts_shaped_vel(self):
+        """B1 stance-contact reward, restricted to locked-wheel yaw modes."""
+        normal_force = self.env.get_wheel_kinematics()["normal_forces"]
+        loaded = normal_force > float(
+            self.env.cfg.rewards.yaw_quadruped_contact_force_threshold
+        )
+        score = (
+            self._yaw_quadruped_stance_mask().float() * loaded.float()
+        ).mean(dim=1)
+        return score * self._stepping_yaw_command_mask().float()
 
-    def _reward_yaw_swing_tangential_velocity(self):
-        """Give a bounded progress signal to the scheduled swing wheel."""
+    def _reward_yaw_feet_clearance_cmd(self):
+        """Adapt B1 foot clearance to the bottom of each rounded wheel."""
         wheel_state = self.env.get_wheel_kinematics()
-        positions_xy = wheel_state["positions_base"][:, :, :2]
-        nominal_xy = self._get_nominal_wheel_xy(positions_xy)
-        tangent = self._get_yaw_tangent_vectors(nominal_xy)
-        direction = torch.sign(self.env.commands[:, 2])
-        commanded_tangent = direction[:, None, None] * tangent[None, :, :]
-        tangential_velocity = torch.sum(
-            wheel_state["velocities_base"][:, :, :2] * commanded_tangent,
-            dim=2,
+        swing_progress = torch.clamp(-self.env.clock_inputs, 0.0, 1.0)
+        target = float(
+            self.env.cfg.rewards.yaw_quadruped_footswing_height
         )
-        scale = float(
-            self.env.cfg.rewards.yaw_gait_tangential_velocity_scale
+        error = torch.square(
+            self._yaw_wheel_bottom_clearance(wheel_state) - target
         )
-        scores = torch.tanh(tangential_velocity / scale).clip(min=0.0)
-        motion_weight = self._get_yaw_motion_weight()
-        swing_score = torch.sum(scores * motion_weight, dim=1)
-        return swing_score * self._pure_yaw_command_mask().float()
+        penalty = torch.sum(error * swing_progress, dim=1)
+        return penalty * self._stepping_yaw_command_mask().float()
+
+    def _get_yaw_raibert_targets(self, reference):
+        """Return B1-style vx/yaw footholds in semantic wheel order."""
+        nominal_xy = self._get_nominal_wheel_xy(reference)
+        foot_indices = getattr(self.env, "foot_indices", None)
+        if foot_indices is None:
+            # The runner performs one reset (and logs diagnostics) before the
+            # first command-clock step has constructed ``foot_indices``.  Use
+            # the neutral Raibert phase for that initialization-only sample;
+            # normal rollout rewards always use the generated gait phase.
+            phase = torch.zeros_like(reference[:, :, 0])
+        else:
+            phase = torch.abs(1.0 - foot_indices * 2.0) - 0.5
+        half_step_time = 0.5 / self.env.commands[:, 4:5].clamp(min=0.1)
+
+        target_xy = nominal_xy[None, :, :].expand(
+            self.env.num_envs, -1, -1
+        ).clone()
+        target_xy[:, :, 0] += (
+            phase * self.env.commands[:, 0:1] * half_step_time
+        )
+        # A yaw rate induces lateral velocity yaw_rate * x at each nominal
+        # foothold. Front and rear legs therefore receive opposite offsets.
+        target_xy[:, :, 1] += (
+            phase
+            * self.env.commands[:, 2:3]
+            * nominal_xy[None, :, 0]
+            * half_step_time
+        )
+        return target_xy
+
+    def _yaw_raibert_error_squared(self, wheel_state=None):
+        """Port the B1 Raibert vx/yaw foothold heuristic by wheel name."""
+        if wheel_state is None:
+            wheel_state = self.env.get_wheel_kinematics()
+        current_xy = wheel_state["positions_base"][:, :, :2]
+        target_xy = self._get_yaw_raibert_targets(current_xy)
+        return torch.sum(torch.square(target_xy - current_xy), dim=2)
+
+    def _reward_yaw_raibert_heuristic(self):
+        error = self._yaw_raibert_error_squared()
+        penalty = torch.sum(error, dim=1)
+        return penalty * self._stepping_yaw_command_mask().float()
+
+    def _yaw_wheel_bottom_clearance(self, wheel_state):
+        base_height = self.env.base_height_above_terrain()[:, None]
+        return (
+            wheel_state["positions_base"][:, :, 2]
+            + base_height
+            - float(self.env.cfg.asset.wheel_radius)
+        )
 
     def get_yaw_gait_diagnostics(self):
-        """Return per-environment pure-yaw mechanism metrics for logging."""
+        """Return locked-wheel quadruped-yaw metrics for logging."""
         wheel_state = self.env.get_wheel_kinematics()
-        wheel_command = self.env.get_wheel_command_kinematics()
-        pure_yaw = self._pure_yaw_command_mask()
-        swing_mask = self._get_yaw_swing_mask()
-        stance_mask = ~swing_mask
+        stepping_yaw = self._stepping_yaw_command_mask()
+        swing_mask = self._yaw_quadruped_swing_mask()
+        stance_mask = self._yaw_quadruped_stance_mask()
         normal_forces = wheel_state["normal_forces"]
-        foothold_error = torch.sqrt(
-            self._yaw_foothold_error_squared(wheel_state).clamp(min=0.0)
-        )
-        swing_foothold_error = torch.sum(
-            foothold_error * swing_mask.float(), dim=1
-        )
-        swing_force = torch.sum(
-            normal_forces * swing_mask.float(), dim=1
-        )
-        stance_force = torch.sum(
-            normal_forces * stance_mask.float(), dim=1
-        ) / stance_mask.sum(dim=1).clamp(min=1)
+        swing_count = swing_mask.sum(dim=1).clamp(min=1)
+        stance_count = stance_mask.sum(dim=1).clamp(min=1)
+        swing_force = torch.sum(normal_forces * swing_mask.float(), dim=1)
+        swing_force = swing_force / swing_count
+        stance_force = torch.sum(normal_forces * stance_mask.float(), dim=1)
+        stance_force = stance_force / stance_count
+        clearance = self._yaw_wheel_bottom_clearance(wheel_state)
+        swing_clearance = torch.sum(
+            clearance * swing_mask.float(), dim=1
+        ) / swing_count
+        raibert_error = torch.sqrt(
+            self._yaw_raibert_error_squared(wheel_state).clamp(min=0.0)
+        ).mean(dim=1)
         leg_deviation = torch.abs(
             self.env.dof_pos[:, self._legs]
             - self.env.default_dof_pos[:, self._legs]
@@ -396,22 +381,21 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             - self.env.default_dof_pos[:, self.env.abad_dof_indices]
         )
         diagnostics = {
-            "mask": pure_yaw,
+            "mask": stepping_yaw,
             "body_yaw_error": torch.abs(
                 self.env.base_ang_vel[:, 2] - self.env.commands[:, 2]
-            ),
-            "wheel_yaw_error": torch.abs(
-                wheel_command["yaw_hat"] - self.env.commands[:, 2]
             ),
             "base_height": self.env.base_height_above_terrain(),
             "mean_leg_posture_error": leg_deviation.mean(dim=1),
             "contact_count": wheel_state["contact"].float().sum(dim=1),
             "swing_foot_normal_force": swing_force,
             "stance_feet_normal_force": stance_force,
-            "foothold_tracking_error": swing_foothold_error,
-            "commanded_step_length": self._get_yaw_step_scale()
-            * float(self.env.cfg.rewards.yaw_gait_step_length),
-            "swing_activation": self._get_yaw_swing_weight().sum(dim=1),
+            "raibert_foothold_error": raibert_error,
+            "swing_activation": swing_mask.float().sum(dim=1),
+            "swing_foot_clearance": swing_clearance,
+            "mean_wheel_speed": torch.mean(
+                torch.abs(wheel_state["angular_speeds"]), dim=1
+            ),
             "abad_max_deviation": abad_deviation.max(dim=1).values,
         }
         for wheel_index, dof_name in enumerate(
@@ -482,7 +466,11 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         self.env.wheel_v_tracking_error_buf = torch.abs(error)
         scale = float(self.env.cfg.rewards.wheel_v_tracking_scale)
         reward = torch.exp(-torch.square(error / scale))
-        return reward * self._locomotion_axis_mask(0).float()
+        active = (
+            self._locomotion_axis_mask(0)
+            & ~self._stepping_yaw_command_mask()
+        )
+        return reward * active.float()
 
     def _reward_wheel_yaw_tracking(self):
         wheel = self.env.get_wheel_command_kinematics()
@@ -490,7 +478,14 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
         self.env.wheel_yaw_tracking_error_buf = torch.abs(error)
         scale = float(self.env.cfg.rewards.wheel_yaw_tracking_scale)
         reward = 1.0 / (1.0 + torch.square(error / scale))
-        return reward * self._locomotion_axis_mask(2).float()
+        # The configured pure_yaw and x_yaw modes are both deliberately
+        # leg-steered. This method remains valid for future non-stepping yaw
+        # modes, but its scale is disabled in the current reward manifest.
+        active = (
+            self._locomotion_axis_mask(2)
+            & ~self._stepping_yaw_command_mask()
+        )
+        return reward * active.float()
 
     @staticmethod
     def _contact_weighted_mean(values, contact):
@@ -502,7 +497,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
     def _reward_wheel_contact_consistency(self):
         wheel_state = self.env.get_wheel_kinematics()
         penalty = 1.0 - wheel_state["contact"].float().mean(dim=1)
-        return penalty * (~self._pure_yaw_command_mask()).float()
+        return penalty * (~self._stepping_yaw_command_mask()).float()
 
     def _reward_wheel_support_load(self):
         wheel_state = self.env.get_wheel_kinematics()
@@ -511,7 +506,7 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
             (minimum - wheel_state["normal_forces"]) / minimum
         ).clip(min=0.0)
         penalty = torch.mean(torch.square(shortfall), dim=1)
-        return penalty * (~self._pure_yaw_command_mask()).float()
+        return penalty * (~self._stepping_yaw_command_mask()).float()
 
     def _reward_wheel_support_geometry(self):
         positions = self.env.get_wheel_kinematics()["positions_base"]
@@ -547,13 +542,25 @@ class ZGWSARMRewards(WholeBodyComplianceRewards):
 
         # Longitudinal pair alignment remains a soft cost. Lateral and height
         # pair symmetry are handled separately only for stationary commands.
-        paired_longitudinal = [
-            x_by_wheel["FAR"] - x_by_wheel["FBL"],
-            x_by_wheel["RAR"] - x_by_wheel["RBL"],
-        ]
-        errors = torch.stack(
-            longitudinal + lateral + paired_longitudinal, dim=1
-        ) / scale
+        paired_longitudinal = torch.stack(
+            [
+                x_by_wheel["FAR"] - x_by_wheel["FBL"],
+                x_by_wheel["RAR"] - x_by_wheel["RBL"],
+            ],
+            dim=1,
+        )
+        if hasattr(self.env, "locomotion_mode_ids"):
+            stepping_yaw = (
+                (self.env.locomotion_mode_ids
+                 == LOCOMOTION_MODE_TO_ID["pure_yaw"])
+                | (self.env.locomotion_mode_ids
+                   == LOCOMOTION_MODE_TO_ID["x_yaw"])
+            )
+            paired_longitudinal = paired_longitudinal * (
+                ~stepping_yaw
+            ).float()[:, None]
+        errors = torch.stack(longitudinal + lateral, dim=1) / scale
+        errors = torch.cat((errors, paired_longitudinal / scale), dim=1)
         return torch.mean(torch.square(errors), dim=1)
 
     def _reward_wheel_lateral_slip(self):

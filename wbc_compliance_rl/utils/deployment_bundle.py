@@ -289,6 +289,14 @@ def _control_contract(task_name, cfg, joints, groups):
         "arm_target_velocity_limit_scale": float(
             control.get("arm_target_velocity_limit_scale", 0.0)
         ),
+        "lock_wheels_for_yaw": bool(
+            control.get("lock_wheels_for_yaw", False)
+        ),
+        "wheel_lock_command_threshold": float(
+            control.get("wheel_lock_command_threshold", 0.05)
+        ),
+        "wheel_lock_kp": float(control.get("wheel_lock_kp", 0.0)),
+        "wheel_lock_kd": float(control.get("wheel_lock_kd", 0.0)),
     }
 
 
@@ -514,6 +522,12 @@ def _flat_values(manifest):
         "arm_target_velocity_limit_scale": control[
             "arm_target_velocity_limit_scale"
         ],
+        "lock_wheels_for_yaw": control["lock_wheels_for_yaw"],
+        "wheel_lock_command_threshold": control[
+            "wheel_lock_command_threshold"
+        ],
+        "wheel_lock_kp": control["wheel_lock_kp"],
+        "wheel_lock_kd": control["wheel_lock_kd"],
         "teleop_force_limit": teleop["force_limit"],
         "teleop_deadzone": teleop["deadzone"],
         "teleop_precision_scale": teleop["precision_scale"],

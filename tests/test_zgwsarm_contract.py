@@ -18,9 +18,6 @@ from wbc_compliance_gym.commands import (
     LOCOMOTION_MODE_TO_ID,
     ContinuousVelocityCurriculum,
     build_command_curricula,
-    resolve_yaw_gait_phase_slots,
-    yaw_swing_envelope,
-    yaw_swing_trajectory,
 )
 from wbc_compliance_gym.envs import register_tasks
 from wbc_compliance_gym.envs.zgwsarm_compliance.zgwsarm_compliance_config import (
@@ -383,18 +380,10 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertEqual(0.02, cfg.rewards.sigma_rew_neg)
         self.assertEqual("yaw", cfg.rewards.force_command_frame)
         self.assertEqual(0.5, cfg.rewards.manip_ori_tracking_sigma)
-        nominal_radius, nominal_pitch, nominal_yaw = (
-            cfg.commands.default_ee_position_spherical
-        )
-        self.assertEqual(
-            [nominal_radius, nominal_radius], cfg.commands.ee_sphe_radius
-        )
-        self.assertEqual(
-            [nominal_pitch, nominal_pitch], cfg.commands.ee_sphe_pitch
-        )
-        self.assertEqual(
-            [nominal_yaw, nominal_yaw], cfg.commands.ee_sphe_yaw
-        )
+        self.assertEqual([0.55, 0.80], cfg.commands.ee_sphe_radius)
+        self.assertEqual([-1.35, -0.60], cfg.commands.ee_sphe_pitch)
+        self.assertEqual([-0.60, 0.60], cfg.commands.ee_sphe_yaw)
+        self.assertEqual([1.0, 4.0], cfg.commands.ee_timing)
         self.assertEqual(0.15, cfg.commands.ee_min_world_height)
         for axis in "xyz":
             self.assertEqual(
@@ -402,8 +391,8 @@ class ZGWSARMContractTests(unittest.TestCase):
                 getattr(cfg.commands, f"ee_force_{axis}"),
             )
         self.assertEqual(-10.0, cfg.reward_scales.termination)
-        self.assertEqual(-5.0, cfg.reward_scales.orientation)
-        self.assertEqual(-10.0, cfg.reward_scales.base_height)
+        self.assertEqual(-8.0, cfg.reward_scales.orientation)
+        self.assertEqual(-15.0, cfg.reward_scales.base_height)
         self.assertEqual(0.0, cfg.reward_scales.dof_pos)
         self.assertEqual([-0.3, 0.3], cfg.commands.lin_vel_x)
         self.assertEqual([-1.0, 1.0], cfg.commands.limit_vel_x)
@@ -438,12 +427,12 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertLess(cfg.reward_scales.wheel_contact_consistency, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_load, 0.0)
         self.assertLess(cfg.reward_scales.wheel_support_geometry, 0.0)
-        self.assertFalse(hasattr(cfg.reward_scales, "wheel_lateral_slip"))
+        self.assertLess(cfg.reward_scales.wheel_lateral_slip, 0.0)
         self.assertLess(cfg.reward_scales.wheel_rolling_consistency, 0.0)
         self.assertGreater(cfg.reward_scales.wheel_v_tracking, 0.0)
-        self.assertGreater(cfg.reward_scales.wheel_yaw_tracking, 0.0)
+        self.assertFalse(hasattr(cfg.reward_scales, "wheel_yaw_tracking"))
         self.assertLess(cfg.reward_scales.stance_posture, 0.0)
-        self.assertEqual(-1.0, cfg.reward_scales.stance_posture)
+        self.assertEqual(-2.0, cfg.reward_scales.stance_posture)
         self.assertEqual(-2.0, cfg.reward_scales.stance_symmetry)
         self.assertEqual(-1.0, cfg.reward_scales.dof_pos_limits_leg)
         self.assertIn("BASE_LINK", cfg.asset.terminate_after_contacts_on)
@@ -466,14 +455,18 @@ class ZGWSARMContractTests(unittest.TestCase):
     def test_yaw_mechanism_learning_config(self):
         cfg = ZGWSARMComplianceCfg()
 
-        self.assertEqual(2.0, cfg.reward_scales.wheel_yaw_tracking)
-        self.assertEqual(-1.5, cfg.reward_scales.yaw_leg_posture)
-        self.assertEqual(-1.5, cfg.reward_scales.yaw_height_floor)
-        self.assertEqual(1.0, cfg.reward_scales.yaw_gait_support)
-        self.assertEqual(1.5, cfg.reward_scales.yaw_foothold_tracking)
+        self.assertFalse(hasattr(cfg.reward_scales, "wheel_yaw_tracking"))
+        self.assertEqual(-2.0, cfg.reward_scales.locomotion_leg_posture)
+        self.assertEqual(-2.0, cfg.reward_scales.yaw_leg_posture)
+        self.assertEqual(-2.0, cfg.reward_scales.yaw_height_floor)
         self.assertEqual(
-            0.3, cfg.reward_scales.yaw_swing_tangential_velocity
+            3.0, cfg.reward_scales.yaw_tracking_contacts_shaped_force
         )
+        self.assertEqual(
+            3.0, cfg.reward_scales.yaw_tracking_contacts_shaped_vel
+        )
+        self.assertEqual(-10.0, cfg.reward_scales.yaw_feet_clearance_cmd)
+        self.assertEqual(-30.0, cfg.reward_scales.yaw_raibert_heuristic)
         self.assertEqual(0.10, cfg.rewards.tracking_sigma_v_yaw)
         self.assertEqual(0.15, cfg.rewards.wheel_yaw_tracking_scale)
         self.assertEqual(
@@ -481,6 +474,11 @@ class ZGWSARMContractTests(unittest.TestCase):
             cfg.rewards.yaw_leg_posture_allowed_deviation,
         )
         self.assertEqual(0.10, cfg.rewards.yaw_leg_posture_scale)
+        self.assertEqual(
+            [0.14, 0.10, 0.12] * 4,
+            cfg.rewards.locomotion_leg_posture_allowed_deviation,
+        )
+        self.assertEqual(0.10, cfg.rewards.locomotion_leg_posture_scale)
         self.assertEqual(0.03, cfg.rewards.yaw_height_allowed_drop)
         self.assertEqual(0.04, cfg.rewards.yaw_height_scale)
         self.assertEqual(
@@ -502,18 +500,17 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
         self.assertEqual([-0.3, 0.3], cfg.commands.lin_vel_x)
         self.assertEqual([-0.3, 0.3], cfg.commands.ang_vel_yaw)
-        self.assertEqual(1.2, cfg.rewards.yaw_gait_frequency)
-        self.assertEqual(0.03, cfg.rewards.yaw_gait_step_length)
-        self.assertEqual(0.30, cfg.rewards.yaw_gait_step_reference_yaw)
-        self.assertEqual(0.15, cfg.rewards.yaw_gait_transition_fraction)
-        self.assertEqual(0.04, cfg.rewards.yaw_gait_foothold_sigma)
-        self.assertEqual(30.0, cfg.rewards.yaw_gait_stance_min_force)
-        self.assertEqual(8.0, cfg.rewards.yaw_gait_stance_force_scale)
-        self.assertEqual(10.0, cfg.rewards.yaw_gait_swing_force_scale)
-        self.assertEqual(
-            ["FAR", "RBL", "FBL", "RAR"],
-            cfg.rewards.yaw_gait_phase_order,
-        )
+        self.assertEqual(2.2, cfg.commands.gait_frequency_cmd_range[0])
+        self.assertEqual(0.5, cfg.commands.gait_phase_cmd_range[0])
+        self.assertEqual(0.5, cfg.commands.gait_duration_cmd_range[0])
+        self.assertEqual(1.0, cfg.rewards.yaw_quadruped_contact_force_threshold)
+        self.assertEqual(0.3, cfg.rewards.yaw_quadruped_swing_ratio)
+        self.assertEqual(0.3, cfg.rewards.yaw_quadruped_stance_ratio)
+        self.assertEqual(0.08, cfg.rewards.yaw_quadruped_footswing_height)
+        self.assertTrue(cfg.control.lock_wheels_for_yaw)
+        self.assertEqual(0.05, cfg.control.wheel_lock_command_threshold)
+        self.assertEqual(20.0, cfg.control.wheel_lock_kp)
+        self.assertEqual(1.5, cfg.control.wheel_lock_kd)
         self.assertEqual("plane", cfg.terrain.mesh_type)
         self.assertEqual("position", cfg.commands.hybrid_mode)
         self.assertEqual([0.0, 0.0], cfg.init_state.arm_reset_position_range)
@@ -822,29 +819,40 @@ class ZGWSARMContractTests(unittest.TestCase):
         cfg = ZGWSARMComplianceCfgPPO()
 
         self.assertEqual(48, cfg.runner.num_steps_per_env)
-        self.assertEqual(1500, cfg.runner.max_iterations)
+        self.assertEqual(3000, cfg.runner.max_iterations)
         self.assertEqual(500, cfg.runner.save_interval)
         self.assertEqual(0, cfg.runner.save_video_interval)
         self.assertEqual(1, cfg.runner.log_freq)
         self.assertFalse(cfg.runner.resume_curriculum)
         self.assertEqual(1.0e-3, cfg.algorithm.learning_rate)
-        self.assertEqual(0.005, cfg.algorithm.entropy_coef)
-        self.assertEqual("831_phase_b1_multimotion", cfg.run.training_name)
+        self.assertEqual(0.001, cfg.algorithm.entropy_coef)
+        self.assertEqual(
+            "901_phase_c_repair_locked_quadruped_yaw", cfg.run.training_name
+        )
         self.assertTrue(cfg.run.resume)
         self.assertEqual(
-            "logs/zgwsarm_compliance/2026-08-31_10-01-24_828v2",
+            "logs/zgwsarm_compliance/2026-08-31_15-36-15_831_phase_b1_multimotion",
             cfg.run.resume_run_dir,
         )
-        self.assertEqual("3500", cfg.run.resume_checkpoint)
+        self.assertEqual("1500", cfg.run.resume_checkpoint)
         self.assertTrue(cfg.run.reset_progress_on_load)
 
-    def test_reward_container_does_not_inherit_b1_gait_semantics(self):
+    def test_reward_container_ports_b1_gait_without_inheriting_dof_layout(self):
         self.assertTrue(issubclass(ZGWSARMRewards, WholeBodyComplianceRewards))
         self.assertTrue(issubclass(B1Z1Rewards, WholeBodyComplianceRewards))
         self.assertFalse(issubclass(ZGWSARMRewards, B1Z1Rewards))
         self.assertFalse(hasattr(ZGWSARMRewards, "_reward_raibert_heuristic"))
         self.assertFalse(
             hasattr(ZGWSARMRewards, "_reward_tracking_contacts_shaped_force")
+        )
+        self.assertTrue(
+            hasattr(ZGWSARMRewards, "_reward_yaw_raibert_heuristic")
+        )
+        self.assertTrue(
+            hasattr(
+                ZGWSARMRewards,
+                "_reward_yaw_tracking_contacts_shaped_force",
+            )
         )
 
     def test_specialized_wheel_torque_formula_and_effort_clipping(self):
@@ -875,6 +883,10 @@ class ZGWSARMContractTests(unittest.TestCase):
                 hip_scale_reduction=1.0,
                 arm_scale_reduction=1.0,
                 arm_target_velocity_limit_scale=1.0,
+                lock_wheels_for_yaw=True,
+                wheel_lock_command_threshold=0.05,
+                wheel_lock_kp=20.0,
+                wheel_lock_kd=1.5,
             ),
             sim=SimpleNamespace(dt=0.002),
             domain_rand=SimpleNamespace(randomize_lag_timesteps=False),
@@ -914,6 +926,9 @@ class ZGWSARMContractTests(unittest.TestCase):
             [i for i in range(env.num_dof) if i not in env.wheel_dof_indices]
         )
         env._cuda_debugger = None
+        env.locomotion_mode_ids = torch.tensor(
+            [LOCOMOTION_MODE_TO_ID["pure_x"]]
+        )
 
         actions = torch.zeros(1, 22)
         actions[0, 0] = 1.0
@@ -929,6 +944,24 @@ class ZGWSARMContractTests(unittest.TestCase):
         self.assertAlmostEqual(0.0, env.torques[0, 7].item())
         self.assertAlmostEqual(0.02, env.joint_pos_target[0, 16].item())
         self.assertAlmostEqual(0.02, env.joint_pos_target[0, 17].item())
+
+        # Entering a yaw mode captures the current wheel angle and ignores the
+        # policy wheel action. Subsequent displacement is restored by lock PD.
+        env.locomotion_mode_ids[:] = LOCOMOTION_MODE_TO_ID["pure_yaw"]
+        env.dof_pos[0, env.wheel_dof_indices] = 0.2
+        env.dof_vel[0, env.wheel_dof_indices] = 0.0
+        actions[0, env.wheel_dof_indices] = 4.0
+        env._compute_torques(actions)
+        torch.testing.assert_close(
+            env.torques[0, env.wheel_dof_indices], torch.zeros(4)
+        )
+        env.dof_pos[0, env.wheel_dof_indices] = 0.3
+        env.dof_vel[0, env.wheel_dof_indices] = 1.0
+        env._compute_torques(actions)
+        torch.testing.assert_close(
+            env.torques[0, env.wheel_dof_indices],
+            torch.full((4,), -3.5),
+        )
 
     def test_pathological_states_are_selected_for_reset(self):
         env = ZGWSARMComplianceEnv.__new__(ZGWSARMComplianceEnv)
@@ -1057,7 +1090,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         reward = ZGWSARMRewards(env)._reward_stance_posture()
         torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]))
 
-    def test_yaw_leg_posture_has_joint_deadzone_and_pure_yaw_mask(self):
+    def test_yaw_leg_posture_covers_pure_and_combined_stepping_yaw(self):
         allowed = torch.tensor([0.22, 0.06, 0.08] * 4)
         positions = torch.stack((allowed, allowed, allowed))
         positions[1:, 1] += 0.10
@@ -1085,10 +1118,48 @@ class ZGWSARMContractTests(unittest.TestCase):
 
         reward = ZGWSARMRewards(env)._reward_yaw_leg_posture()
         torch.testing.assert_close(
-            reward, torch.tensor([0.0, 1.0 / 12.0, 0.0])
+            reward, torch.tensor([0.0, 1.0 / 12.0, 1.0 / 12.0])
         )
 
-    def test_yaw_height_floor_penalizes_only_low_pure_yaw_base(self):
+    def test_locomotion_leg_posture_excludes_all_stepping_yaw_modes(self):
+        allowed = torch.tensor([0.14, 0.10, 0.12] * 4)
+        positions = torch.stack((allowed, allowed, allowed, allowed))
+        positions[:, 1] += 0.10
+        env = SimpleNamespace(
+            commands=torch.tensor(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.2, 0.0, 0.0],
+                    [0.0, 0.0, 0.2],
+                    [0.2, 0.0, 0.2],
+                ]
+            ),
+            locomotion_mode_ids=torch.tensor(
+                [
+                    LOCOMOTION_MODE_TO_ID["stand"],
+                    LOCOMOTION_MODE_TO_ID["pure_x"],
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
+                ]
+            ),
+            dof_pos=positions,
+            default_dof_pos=torch.zeros(4, 12),
+            leg_dof_indices=torch.arange(12),
+            cfg=SimpleNamespace(
+                rewards=SimpleNamespace(
+                    stand_still_command_threshold=0.1,
+                    locomotion_leg_posture_allowed_deviation=allowed.tolist(),
+                    locomotion_leg_posture_scale=0.10,
+                )
+            ),
+        )
+
+        reward = ZGWSARMRewards(env)._reward_locomotion_leg_posture()
+        torch.testing.assert_close(
+            reward, torch.tensor([0.0, 1.0 / 12.0, 0.0, 0.0])
+        )
+
+    def test_yaw_height_floor_covers_pure_and_combined_stepping_yaw(self):
         env = SimpleNamespace(
             commands=torch.tensor(
                 [[0.0, 0.0, 0.2], [0.0, 0.0, 0.2], [0.2, 0.0, 0.2]]
@@ -1111,62 +1182,97 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
 
         reward = ZGWSARMRewards(env)._reward_yaw_height_floor()
-        torch.testing.assert_close(reward, torch.tensor([0.0, 1.0, 0.0]))
+        torch.testing.assert_close(reward, torch.tensor([0.0, 1.0, 1.0]))
 
-    def test_yaw_crawl_clock_and_reward_share_gait_phase(self):
+    def test_locked_yaw_uses_original_diagonal_quadruped_clock(self):
         cfg = ZGWSARMComplianceCfg()
         env = SimpleNamespace(
-            num_envs=2,
+            num_envs=3,
             device="cpu",
             dt=0.1,
             cfg=cfg,
-            commands=torch.zeros(2, 23),
+            commands=torch.zeros(3, 23),
             locomotion_mode_ids=torch.tensor(
                 [
                     LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
                     LOCOMOTION_MODE_TO_ID["stand"],
                 ]
             ),
-            gait_indices=torch.zeros(2),
-            foot_indices=torch.zeros(2, 4),
-            clock_inputs=torch.zeros(2, 4),
-            doubletime_clock_inputs=torch.zeros(2, 4),
-            halftime_clock_inputs=torch.zeros(2, 4),
-            desired_contact_states=torch.zeros(2, 4),
+            gait_indices=torch.zeros(3),
+            foot_indices=torch.zeros(3, 4),
+            clock_inputs=torch.zeros(3, 4),
+            doubletime_clock_inputs=torch.zeros(3, 4),
+            halftime_clock_inputs=torch.zeros(3, 4),
+            desired_contact_states=torch.zeros(3, 4),
         )
         env.commands[:, 4] = 2.2
+        env.commands[:, 5] = 0.5
         env.commands[:, 8] = 0.5
         env.commands[0, 2] = 0.15
+        env.commands[1, 0] = 0.20
+        env.commands[1, 2] = 0.15
 
         CommandLifecycleMixin._step_contact_targets(env)
 
-        torch.testing.assert_close(env.gait_indices, torch.tensor([0.12, 0.22]))
-        self.assertAlmostEqual(1.2, env.commands[0, 4].item())
+        torch.testing.assert_close(
+            env.gait_indices, torch.tensor([0.22, 0.22, 0.22])
+        )
+        self.assertAlmostEqual(2.2, env.commands[0, 4].item())
+        self.assertAlmostEqual(2.2, env.commands[1, 4].item())
         self.assertFalse(torch.all(env.clock_inputs[0] == 1.0))
-        torch.testing.assert_close(env.clock_inputs[1], torch.ones(4))
+        self.assertFalse(torch.all(env.clock_inputs[1] == 1.0))
+        torch.testing.assert_close(env.clock_inputs[2], torch.ones(4))
+        # FAR/RBL form one diagonal and FBL/RAR the other.
         torch.testing.assert_close(
-            env.desired_contact_states[0], torch.tensor([0.0, 1.0, 1.0, 1.0])
+            env.clock_inputs[0, 0], env.clock_inputs[0, 3]
         )
-        self.assertEqual(
-            (0, 2, 3, 1),
-            resolve_yaw_gait_phase_slots(
-                cfg.asset.wheel_dof_names,
-                cfg.rewards.yaw_gait_phase_order,
-            ),
+        torch.testing.assert_close(
+            env.clock_inputs[0, 1], env.clock_inputs[0, 2]
+        )
+        torch.testing.assert_close(
+            env.clock_inputs[0, 0], -env.clock_inputs[0, 1]
         )
 
-    def test_yaw_gait_uses_smooth_load_and_motion_windows(self):
-        progress = torch.tensor([0.0, 0.075, 0.15, 0.5, 0.85, 0.925])
+    def test_yaw_quadruped_clock_masks_form_diagonal_pairs(self):
+        cfg = ZGWSARMComplianceCfg()
+        env = SimpleNamespace(
+            clock_inputs=torch.tensor([[-1.0, 1.0, 1.0, -1.0]]),
+            cfg=cfg,
+        )
+        rewards = ZGWSARMRewards(env)
         torch.testing.assert_close(
-            yaw_swing_envelope(progress, 0.15),
-            torch.tensor([0.0, 0.5, 1.0, 1.0, 1.0, 0.5]),
+            rewards._yaw_quadruped_swing_mask(),
+            torch.tensor([[True, False, False, True]]),
         )
         torch.testing.assert_close(
-            yaw_swing_trajectory(progress, 0.15),
-            torch.tensor([0.0, 0.0, 0.0, 0.5, 1.0, 1.0]),
+            rewards._yaw_quadruped_stance_mask(),
+            torch.tensor([[False, True, True, False]]),
         )
 
-    def test_yaw_gait_rewards_support_and_mirror_footholds(self):
+    def test_yaw_raibert_diagnostics_allow_initial_reset_before_clock_step(self):
+        cfg = ZGWSARMComplianceCfg()
+        reference = torch.zeros(2, 4, 2)
+        env = SimpleNamespace(
+            num_envs=2,
+            commands=torch.zeros(2, 23),
+            cfg=cfg,
+        )
+        env.commands[:, 4] = 2.2
+
+        targets = ZGWSARMRewards(env)._get_yaw_raibert_targets(reference)
+
+        expected = torch.tensor(
+            [
+                [0.35, -0.22],
+                [0.35, 0.22],
+                [-0.35, -0.22],
+                [-0.35, 0.22],
+            ]
+        ).expand(2, -1, -1)
+        torch.testing.assert_close(targets, expected)
+
+    def test_locked_yaw_reuses_b1_contact_clearance_and_raibert_shaping(self):
         cfg = ZGWSARMComplianceCfg()
         nominal_xy = torch.tensor(
             [
@@ -1176,97 +1282,92 @@ class ZGWSARMContractTests(unittest.TestCase):
                 [-0.35, 0.22],
             ]
         )
-        positions = torch.zeros(3, 4, 3)
+        positions = torch.zeros(4, 4, 3)
         positions[:, :, :2] = nominal_xy
-        velocities = torch.zeros(3, 4, 3)
-        normal_forces = torch.tensor(
-            [[0.0, 40.0, 40.0, 40.0], [0.0, 40.0, 40.0, 40.0], [0.0] * 4]
-        )
+        positions[:, :, 2] = cfg.asset.wheel_radius - 0.54
+        positions[:, (0, 3), 2] += 0.08
+        normal_forces = torch.tensor([[0.0, 40.0, 40.0, 0.0]] * 4)
         state = {
             "positions_base": positions,
-            "velocities_base": velocities,
+            "velocities_base": torch.zeros(4, 4, 3),
             "normal_forces": normal_forces,
             "contact": normal_forces > cfg.rewards.wheel_contact_force_threshold,
+            "angular_speeds": torch.zeros(4, 4),
         }
         env = SimpleNamespace(
-            num_envs=3,
-            commands=torch.tensor(
-                [[0.0, 0.0, 0.2], [0.0, 0.0, -0.2], [0.2, 0.0, 0.0]]
-            ),
+            num_envs=4,
+            commands=torch.zeros(4, 23),
             locomotion_mode_ids=torch.tensor(
                 [
                     LOCOMOTION_MODE_TO_ID["pure_yaw"],
                     LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
                     LOCOMOTION_MODE_TO_ID["pure_x"],
                 ]
             ),
-            gait_indices=torch.full((3,), 0.125),
+            foot_indices=torch.tensor([[0.0, 0.5, 0.5, 0.0]] * 4),
+            clock_inputs=torch.tensor([[-1.0, 1.0, 1.0, -1.0]] * 4),
             cfg=cfg,
             get_wheel_kinematics=lambda: state,
-            get_wheel_command_kinematics=lambda: {
-                "yaw_hat": torch.zeros(3),
-            },
             leg_dof_indices=torch.arange(12),
             abad_dof_indices=torch.tensor([0, 3, 6, 9]),
-            dof_pos=torch.zeros(3, 12),
-            default_dof_pos=torch.zeros(3, 12),
-            base_ang_vel=torch.zeros(3, 3),
-            base_height_above_terrain=lambda: torch.full((3,), 0.54),
+            dof_pos=torch.zeros(4, 12),
+            default_dof_pos=torch.zeros(4, 12),
+            base_ang_vel=torch.zeros(4, 3),
+            base_height_above_terrain=lambda: torch.full((4,), 0.54),
         )
+        env.commands[:, 4] = 2.2
+        env.commands[0, 2] = 0.2
+        env.commands[1, 2] = -0.2
+        env.commands[2, 0] = 0.2
+        env.commands[2, 2] = 0.2
+        env.commands[3, 0] = 0.2
         rewards = ZGWSARMRewards(env)
-        targets = rewards._get_yaw_target_footholds(positions[:, :, :2])
+        targets = rewards._get_yaw_raibert_targets(positions[:, :, :2])
         torch.testing.assert_close(
             targets[0] - nominal_xy, -(targets[1] - nominal_xy)
         )
-        # At the middle of the motion window, a 0.2 rad/s command has
-        # completed half of its 2 cm command-scaled step.
+        positions[:, :, :2] = targets
         torch.testing.assert_close(
-            torch.linalg.norm(targets[0] - nominal_xy, dim=1),
-            torch.full((4,), 0.01),
-        )
-        positions[:2] = torch.cat(
-            (targets[:2], torch.zeros(2, 4, 1)), dim=2
-        )
-        tangent = rewards._get_yaw_tangent_vectors(nominal_xy)
-        velocities[0, 0, :2] = 0.2 * tangent[0]
-        velocities[1, 0, :2] = -0.2 * tangent[0]
-
-        support = rewards._reward_yaw_gait_support()
-        expected_support = (
-            1.0 + 3.0 * torch.sigmoid(torch.tensor((40.0 - 30.0) / 8.0))
-        ) / 4.0
-        torch.testing.assert_close(
-            support, torch.tensor([expected_support, expected_support, 0.0])
+            rewards._reward_yaw_tracking_contacts_shaped_force(),
+            torch.tensor([0.5, 0.5, 0.5, 0.0]),
         )
         torch.testing.assert_close(
-            rewards._reward_yaw_foothold_tracking(),
-            torch.tensor([1.0, 1.0, 0.0]),
+            rewards._reward_yaw_tracking_contacts_shaped_vel(),
+            torch.tensor([0.5, 0.5, 0.5, 0.0]),
         )
-        expected_velocity = torch.tanh(torch.tensor(1.0))
         torch.testing.assert_close(
-            rewards._reward_yaw_swing_tangential_velocity(),
-            torch.tensor([expected_velocity, expected_velocity, 0.0]),
+            rewards._reward_yaw_feet_clearance_cmd(), torch.zeros(4)
         )
+        torch.testing.assert_close(
+            rewards._reward_yaw_raibert_heuristic(), torch.zeros(4)
+        )
+        positions[0, :, 1] += 0.10
+        torch.testing.assert_close(
+            rewards._reward_yaw_raibert_heuristic(),
+            torch.tensor([0.04, 0.0, 0.0, 0.0]),
+        )
+        positions[0, :, 1] -= 0.10
         torch.testing.assert_close(
             rewards._reward_wheel_contact_consistency(),
-            torch.tensor([0.0, 0.0, 1.0]),
+            torch.tensor([0.0, 0.0, 0.0, 0.5]),
         )
         torch.testing.assert_close(
             rewards._reward_wheel_support_load(),
-            torch.tensor([0.0, 0.0, 1.0]),
+            torch.tensor([0.0, 0.0, 0.0, 0.5]),
         )
         diagnostics = rewards.get_yaw_gait_diagnostics()
         for name in (
             "body_yaw_error",
-            "wheel_yaw_error",
             "base_height",
             "mean_leg_posture_error",
             "contact_count",
             "swing_foot_normal_force",
             "stance_feet_normal_force",
-            "foothold_tracking_error",
-            "commanded_step_length",
+            "raibert_foothold_error",
             "swing_activation",
+            "swing_foot_clearance",
+            "mean_wheel_speed",
             "abad_max_deviation",
             "FAR_contact",
             "FBL_contact",
@@ -1275,7 +1376,7 @@ class ZGWSARMContractTests(unittest.TestCase):
         ):
             self.assertIn(name, diagnostics)
         torch.testing.assert_close(
-            diagnostics["contact_count"], torch.tensor([3.0, 3.0, 0.0])
+            diagnostics["contact_count"], torch.tensor([2.0, 2.0, 2.0, 2.0])
         )
 
     def test_leg_velocity_regularizers_exclude_wheel_dofs(self):
@@ -1467,6 +1568,7 @@ class ZGWSARMContractTests(unittest.TestCase):
             cfg=SimpleNamespace(
                 rewards=SimpleNamespace(
                     tracking_sigma_v_yaw=0.10,
+                    wheel_v_tracking_scale=0.40,
                     wheel_yaw_tracking_scale=0.15,
                     wheel_command_active_threshold=0.05,
                 )
@@ -1480,7 +1582,12 @@ class ZGWSARMContractTests(unittest.TestCase):
         )
         torch.testing.assert_close(
             rewards._reward_wheel_yaw_tracking(),
-            torch.tensor([9.0 / 13.0, 0.0, 0.36]),
+            torch.tensor([0.0, 0.0, 0.0]),
+        )
+        expected_forward = torch.exp(torch.tensor(-1.0))
+        torch.testing.assert_close(
+            rewards._reward_wheel_v_tracking(),
+            torch.tensor([0.0, expected_forward, 0.0]),
         )
 
     def test_wheel_lateral_slip_penalty_is_mode_dependent(self):
@@ -1730,6 +1837,42 @@ class ZGWSARMContractTests(unittest.TestCase):
         torch.testing.assert_close(
             rewards._reward_wheel_support_geometry(),
             torch.tensor([expected]),
+        )
+
+    def test_wheel_support_geometry_allows_stepping_yaw_pair_x_offset(self):
+        state = {
+            "positions_base": torch.tensor(
+                [
+                    [[0.34, -0.20, -0.5], [0.42, 0.20, -0.5],
+                     [-0.34, -0.20, -0.5], [-0.42, 0.20, -0.5]],
+                    [[0.34, -0.20, -0.5], [0.42, 0.20, -0.5],
+                     [-0.34, -0.20, -0.5], [-0.42, 0.20, -0.5]],
+                ]
+            )
+        }
+        env = SimpleNamespace(
+            locomotion_mode_ids=torch.tensor(
+                [
+                    LOCOMOTION_MODE_TO_ID["pure_yaw"],
+                    LOCOMOTION_MODE_TO_ID["x_yaw"],
+                ]
+            ),
+            get_wheel_kinematics=lambda: state,
+            cfg=SimpleNamespace(
+                asset=SimpleNamespace(wheel_dof_names=list(WHEEL_DOF_NAMES)),
+                rewards=SimpleNamespace(
+                    wheel_support_front_x_range=[0.25, 0.45],
+                    wheel_support_rear_x_range=[-0.45, -0.25],
+                    wheel_support_right_y_range=[-0.32, -0.12],
+                    wheel_support_left_y_range=[0.12, 0.32],
+                    wheel_support_geometry_scale=0.10,
+                ),
+            ),
+        )
+
+        torch.testing.assert_close(
+            ZGWSARMRewards(env)._reward_wheel_support_geometry(),
+            torch.tensor([0.0, 0.0]),
         )
 
     def test_wheel_support_geometry_penalizes_outward_splay(self):

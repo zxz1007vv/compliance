@@ -145,14 +145,15 @@ class TaskRegistry:
             _, checkpoint_path, _ = resolve_local_checkpoint(
                 resume_run_dir, getattr(args, "checkpoint", "latest")
             )
-            runner.load(checkpoint_path)
-            if getattr(train_cfg.run, "reset_progress_on_load", False):
-                # Warm-start a new experiment from learned weights and
-                # optimizer state while giving the new phase its own progress
-                # axis and checkpoint numbering.
-                runner.current_learning_iteration = 0
-                runner.tot_timesteps = 0
-                runner.tot_time = 0.0
+            warm_start = getattr(
+                train_cfg.run, "reset_progress_on_load", False
+            )
+            runner.load(
+                checkpoint_path,
+                restore_runner_state=not warm_start,
+                restore_rng_state=not warm_start,
+            )
+            if warm_start:
                 print(
                     "Warm-starting a new run at iteration 0 from: "
                     f"{checkpoint_path}"

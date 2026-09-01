@@ -347,7 +347,13 @@ class OnPolicyRunner:
         print(f"Saved checkpoint {iteration}: {path}", flush=True)
         print(f"Exported policy {iteration}: {export_path}", flush=True)
 
-    def load(self, path, load_optimizer=True):
+    def load(
+        self,
+        path,
+        load_optimizer=True,
+        restore_runner_state=True,
+        restore_rng_state=True,
+    ):
         loaded = torch.load(path, map_location=self.device)
         # Compatibility with checkpoints produced before the runner-aligned
         # checkpoint format was introduced.
@@ -366,14 +372,15 @@ class OnPolicyRunner:
             decoder_state = loaded.get("decoder_optimizer_state_dict")
             if decoder_state is not None and hasattr(self.alg, "decoder_optimizer"):
                 self.alg.decoder_optimizer.load_state_dict(decoder_state)
-        self.current_learning_iteration = int(loaded.get("iter", 0))
-        runner_state = loaded.get("runner_state", {})
-        self.tot_timesteps = int(runner_state.get("tot_timesteps", 0))
-        self.tot_time = float(runner_state.get("tot_time", 0.0))
-        if "learning_rate" in runner_state:
-            self.alg.learning_rate = runner_state["learning_rate"]
-            for param_group in self.alg.optimizer.param_groups:
-                param_group["lr"] = self.alg.learning_rate
+        if restore_runner_state:
+            self.current_learning_iteration = int(loaded.get("iter", 0))
+            runner_state = loaded.get("runner_state", {})
+            self.tot_timesteps = int(runner_state.get("tot_timesteps", 0))
+            self.tot_time = float(runner_state.get("tot_time", 0.0))
+            if "learning_rate" in runner_state:
+                self.alg.learning_rate = runner_state["learning_rate"]
+                for param_group in self.alg.optimizer.param_groups:
+                    param_group["lr"] = self.alg.learning_rate
 
         if getattr(self.runner_cfg, "resume_curriculum", True):
             load_curriculum_state = getattr(
@@ -383,13 +390,19 @@ class OnPolicyRunner:
             if load_curriculum_state is not None and curriculum_state is not None:
                 load_curriculum_state(curriculum_state)
 
-        rng_state = loaded.get("rng_state")
+        rng_state = loaded.get("rng_state") if restore_rng_state else None
         if rng_state is not None:
-            torch.set_rng_state(rng_state["torch"])
+            # ``map_location=self.device`` moves serialized RNG tensors to the
+            # training GPU, while PyTorch's CPU generator requires a CPU
+            # ByteTensor.  Move both CPU and per-device CUDA states back to
+            # CPU before restoring them.
+            torch.set_rng_state(rng_state["torch"].cpu())
             np.random.set_state(rng_state["numpy"])
             random.setstate(rng_state["python"])
             if torch.cuda.is_available() and "cuda" in rng_state:
-                torch.cuda.set_rng_state_all(rng_state["cuda"])
+                torch.cuda.set_rng_state_all(
+                    [state.cpu() for state in rng_state["cuda"]]
+                )
         return loaded.get("infos")
 
     def log_video(self, it):
